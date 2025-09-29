@@ -22,29 +22,16 @@ The following attributes are available for this model:
 
 | Name          | Type   | Inclusion | Description                |
 |---------------|--------|-----------|----------------------------|
-| `attribute_1` | float  | Required  | Description of attribute 1 |
-| `attribute_2` | string | Optional  | Description of attribute 2 |
+| `camera_name` | string  | Required  | Name of the camera used for checking pose of chessboard. |
+| `pattern_size` | list | Required  | Size of the chessboard pattern. |
+| `square_size_mm` | int | Required  | Physical size of a square in the chessboard pattern.  |
 
 #### Example Configuration
 
 ```json
 {
-  "attribute_1": 1.0,
-  "attribute_2": "foo"
-}
-```
-
-### DoCommand
-
-If your model implements DoCommand, provide an example payload of each command that is supported and the arguments that can be used. If your model does not implement DoCommand, remove this section.
-
-#### Example DoCommand
-
-```json
-{
-  "command_name": {
-    "arg1": "foo",
-    "arg2": 1
-  }
+  "camera_name": "cam",
+  "pattern_size": [9, 6],
+  "square_size_mm": 21
 }
 ```
