@@ -1,18 +1,19 @@
-# Module opencv 
+# Module opencv
 
-Provide a description of the purpose of the module and any relevant information.
+A Viam module that provides OpenCV-based computer vision components for robotics applications. This module includes pose tracking capabilities using chessboard patterns and hand-eye calibration services for robotic arm calibration.
 
 ## Model viam:opencv:chessboard
 
-Provide a description of the model and any relevant information.
+A pose tracker component that detects and tracks the pose of chessboard calibration patterns in camera images. This model uses OpenCV's chessboard detection algorithms to provide accurate 6-DOF pose estimation of chessboard targets, making it ideal for camera calibration and pose tracking applications.
 
 ### Configuration
 The following attribute template can be used to configure this model:
 
 ```json
 {
-"attribute_1": <float>,
-"attribute_2": <string>
+"camera_name": <string>,
+"pattern_size": <list>,
+"square_size_mm": <int>
 }
 ```
 
@@ -20,11 +21,11 @@ The following attribute template can be used to configure this model:
 
 The following attributes are available for this model:
 
-| Name          | Type   | Inclusion | Description                |
-|---------------|--------|-----------|----------------------------|
-| `camera_name` | string  | Required  | Name of the camera used for checking pose of chessboard. |
-| `pattern_size` | list | Required  | Size of the chessboard pattern. |
-| `square_size_mm` | int | Required  | Physical size of a square in the chessboard pattern.  |
+| Name             | Type   | Inclusion | Description                                              |
+|------------------|--------|-----------|----------------------------------------------------------|
+| `camera_name`    | string | Required  | Name of the camera used for checking pose of chessboard. |
+| `pattern_size`   | list   | Required  | Size of the chessboard pattern.                          |
+| `square_size_mm` | int    | Required  | Physical size of a square in the chessboard pattern.     |
 
 #### Example Configuration
 
@@ -33,5 +34,49 @@ The following attributes are available for this model:
   "camera_name": "cam",
   "pattern_size": [9, 6],
   "square_size_mm": 21
+}
+```
+
+## Model viam:opencv:handeyecalibration
+
+A calibration service that performs hand-eye calibration for robotic arms with mounted cameras. This service automates the process of determining the transformation between the robot's end-effector and camera coordinate frames by moving the arm through predefined poses while tracking AprilTag markers. The resulting calibration enables accurate coordination between robot motion and visual perception.
+
+### Configuration
+The following attribute template can be used to configure this model:
+
+```json
+{
+"arm_name": <string>,
+"camera_name": <string>,
+"joint_positions": <list>,
+"pose_tracker": <string>,
+"motion": <string>,
+"sleep_seconds": <float>
+}
+```
+
+#### Attributes
+
+The following attributes are available for this model:
+
+| Name              | Type   | Inclusion | Description                                              |
+|-------------------|--------|-----------|----------------------------------------------------------|
+| `arm_name`        | string | Required  | Name of the arm component used for calibration.         |
+| `camera_name`     | string | Required  | Name of the camera component used for calibration.      |
+| `joint_positions` | list   | Required  | List of joint positions for calibration poses.          |
+| `pose_tracker`    | string | Required  | Name of the pose tracker component to detect markers.   |
+| `motion`          | string | Optional  | Name of the motion service for coordinated movement.     |
+| `sleep_seconds`   | float  | Optional  | Sleep time between movements (defaults to 1.0 seconds). |
+
+#### Example Configuration
+
+```json
+{
+  "arm_name": "my_arm",
+  "camera_name": "cam",
+  "joint_positions": [[0, 0, 0, 0, 0, 0], [0.1, 0.2, 0.3, 0, 0, 0]],
+  "pose_tracker": "tag_tracker",
+  "motion": "motion_service",
+  "sleep_seconds": 2.0
 }
 ```

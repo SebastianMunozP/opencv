@@ -2,7 +2,7 @@
   "$schema": "https://dl.viam.dev/module.schema.json",
   "module_id": "viam:opencv",
   "visibility": "public",
-  "url": "",
+  "url": "https://github.com/viam-labs/opencv",
   "description": "Modular pose_tracker component: chessboard",
   "models": [
     {
@@ -10,6 +10,12 @@
       "model": "viam:opencv:chessboard",
       "short_description": "Provide a short (100 characters or less) description of this model here",
       "markdown_link": "README.md#model-viamopencvchessboard"
+    },
+    {
+      "api": "rdk:service:generic",
+      "model": "viam:opencv:hand_eye_calibration",
+      "short_description": "Provide a short (100 characters or less) description of this model here",
+      "markdown_link": "README.md#model-viamopencvhandeyecalibration"
     }
   ],
   "applications": null,
