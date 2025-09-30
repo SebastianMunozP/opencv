@@ -109,6 +109,7 @@ class HandEyeCalibration(Generic, EasyResource):
 
         self.joint_positions = attrs.get(joint_positions_attr)
         self.sleep_seconds = attrs.get(sleep_attr, 1.0)
+        self.joint_positions = []
 
         return super().reconfigure(config, dependencies)
 
@@ -130,63 +131,64 @@ class HandEyeCalibration(Generic, EasyResource):
                     t_target2cam_list = []
 
                     # TODO: Use motion planning if available
-                    for i, joints in enumerate(self.joint_positions):
-                        R_g2b = None
-                        t_g2b = None
-                        R_t2c = None
-                        t_t2c = None
+                    if self.motion is None:
+                        for i, joints in enumerate(self.joint_positions):
+                            R_g2b = None
+                            t_g2b = None
+                            R_t2c = None
+                            t_t2c = None
 
-                        self.logger.debug(f"Moving to pose {i+1}/{len(self.joint_positions)}")
+                            self.logger.debug(f"Moving to pose {i+1}/{len(self.joint_positions)}")
 
-                        jp = JointPositions(values=joints)
-                        await self.arm.move_to_joint_positions(jp)
-                        while await self.arm.is_moving():
-                            await asyncio.sleep(0.05)
-                        self.logger.debug(f"Moved arm to position: {jp}")
+                            jp = JointPositions(values=joints)
+                            await self.arm.move_to_joint_positions(jp)
+                            while await self.arm.is_moving():
+                                await asyncio.sleep(0.05)
+                            self.logger.debug(f"Moved arm to position: {jp}")
 
-                        # Sleep for the configured amount of time to allow the arm and camera to settle
-                        await asyncio.sleep(self.sleep_seconds)
+                            # Sleep for the configured amount of time to allow the arm and camera to settle
+                            await asyncio.sleep(self.sleep_seconds)
 
-                        arm_pose = await self.arm.get_end_position()
-                        self.logger.debug(f"Found end of are pose: {arm_pose}")
+                            arm_pose = await self.arm.get_end_position()
+                            self.logger.debug(f"Found end of are pose: {arm_pose}")
 
-                        R_g2b = call_go_ov2mat(
-                            arm_pose.o_x, 
-                            arm_pose.o_y, 
-                            arm_pose.o_z, 
-                            arm_pose.theta
-                        )
-                        if R_g2b is None:
-                            self.logger.warning("Failed to convert arm orientation vector to rotation matrix")
-                            continue
-                        t_g2b = np.array([arm_pose.x], [arm_pose.y], [arm_pose.z], dtype=np.float64)
+                            R_g2b = call_go_ov2mat(
+                                arm_pose.o_x, 
+                                arm_pose.o_y, 
+                                arm_pose.o_z, 
+                                arm_pose.theta
+                            )
+                            if R_g2b is None:
+                                self.logger.warning("Failed to convert arm orientation vector to rotation matrix")
+                                continue
+                            t_g2b = np.array([arm_pose.x], [arm_pose.y], [arm_pose.z], dtype=np.float64)
 
-                        # Get pose of the tag
-                        tag_poses: dict = await self.pose_tracker.get_poses()
-                        if tag_poses is None:
-                            raise Exception("Could not find any tags in camera frame. Check to make sure there is a tag in view.")
-                        if len(tag_poses.items) > 1:
-                            raise Exception("More than 1 tag detected in camera frame. Please remove any other tags in view.")
-                        
-                        tag_pose: Pose = tag_poses.values()[0]
-                        R_t2c = call_go_ov2mat(
-                            tag_pose.o_x,
-                            tag_pose.o_y,
-                            tag_pose.o_z,
-                            tag_pose.theta
-                        )
-                        if R_t2c is None:
-                            self.logger.warning("Failed to convert tag orientation vector to rotation matrix.")
-                        t_t2c = np.array([tag_pose.x], [tag_pose.y], [tag_pose.z], dtype=np.float64)
+                            # Get pose of the tag
+                            tag_poses: dict = await self.pose_tracker.get_poses()
+                            if tag_poses is None:
+                                raise Exception("Could not find any tags in camera frame. Check to make sure there is a tag in view.")
+                            if len(tag_poses.items) > 1:
+                                raise Exception("More than 1 tag detected in camera frame. Please remove any other tags in view.")
+                            
+                            tag_pose: Pose = tag_poses.values()[0]
+                            R_t2c = call_go_ov2mat(
+                                tag_pose.o_x,
+                                tag_pose.o_y,
+                                tag_pose.o_z,
+                                tag_pose.theta
+                            )
+                            if R_t2c is None:
+                                self.logger.warning("Failed to convert tag orientation vector to rotation matrix.")
+                            t_t2c = np.array([tag_pose.x], [tag_pose.y], [tag_pose.z], dtype=np.float64)
 
-                        if R_g2b is None or t_g2b is None or R_t2c is None or t_t2c is None:
-                            self.logger.warning("Missing data. Skipping this pose.")
-                            continue
-                        
-                        R_gripper2base_list.append(R_g2b.T)
-                        t_gripper2base_list.append(t_g2b)
-                        R_target2cam_list.append(R_t2c.T)
-                        t_target2cam_list.append(t_t2c)
+                            if R_g2b is None or t_g2b is None or R_t2c is None or t_t2c is None:
+                                self.logger.warning("Missing data. Skipping this pose.")
+                                continue
+
+                            R_gripper2base_list.append(R_g2b.T)
+                            t_gripper2base_list.append(t_g2b)
+                            R_target2cam_list.append(R_t2c.T)
+                            t_target2cam_list.append(t_t2c)
 
                     pose = cv2.calibrateHandEye(
                         R_gripper2base=R_gripper2base_list,
@@ -199,23 +201,71 @@ class HandEyeCalibration(Generic, EasyResource):
                     
                     viam_pose: Pose = call_go_mat2ov(pose)
 
-                    return {viam_pose}
+                    resp["run_calibration"] = viam_pose
                 case "move_arm": 
-                    return {}
+                    raise NotImplementedError("This is not yet implemented")
                 case "check_tags":
-                    return {}
+                    tag_poses: dict = await self.pose_tracker.get_poses()
+                    if tag_poses is None:
+                        resp["check_tags"] = "No tags found in image"
+                        break
+
+                    resp["check_tags"] = f"Number of tags seen: {len(tag_poses)}"
                 case "save_calibration_position":
-                    return {}
+                    index = int(value)
+
+                    arm_joint_pos = await self.arm.get_joint_positions()
+                    if arm_joint_pos is None:
+                        resp["save_calibration_position"] = "Could not get joint positions of arm"
+                        break
+
+                    if index < 0:
+                        self.joint_positions.append(arm_joint_pos)
+                        resp["save_calibration_position"] = f"joint position {len(self.joint_positions) - 1} added to config"
+                    elif index >= len(self.joint_positions):
+                        resp["save_calibration_position"] = f"index {value} is out of range, only {len(self.joint_positions)} are set."
+                    else:
+                        self.joint_positions[index] = arm_joint_pos
+                        resp["save_calibration_position"] = f"joint position {index} updated in config"
+
+                    # TODO: Update config with updated joint positions array
                 case "move_arm_to_position":
-                    return {}
+                    index = int(value)
+
+                    if index >= len(self.joint_positions):
+                        resp["move_arm_to_position"] = f"position {index} invalid since there are only {len(self.joint_positions)} positions"
+
+                    joint_pos = self.joint_positions[index]
+
+                    if self.motion is None:
+                        jp = JointPositions(joint_pos)
+                        arm_joint_pos = self.arm.move_to_joint_positions(jp)
+
+                        # Sleep to allow time for the camera and arm to settle
+                        asyncio.sleep(self.sleep_seconds)
+
+                    # TODO: Implement using motion service 
+
+                    tag_poses: dict = await self.pose_tracker.get_poses()
+                    if tag_poses is None:
+                        resp["move_arm_to_position"] = "No tags found in image"
+                        break
+
+                    resp["move_arm_to_position"] = len(tag_poses)
                 case "delete_calibration_position":
-                    return {}
+                    index = int(value)
+                    if index >= len(self.joint_positions):
+                        resp["delete_calibration_position"] = f"index {index} is out of range of list with length {len(self.joint_positions)}"
+
+                    del self.joint_positions[index]
+
+                    resp["delete_calibration_position"] = f"position {index} deleted"
                 case "clear_calibration_positions":
-                    return {}
+                    self.joint_positions = []
+
+                    resp["clear_calibration_positions"] = "all calibration positions removed"
                 case "auto_calibrate":
-                    return {}
-                case "save_guess": 
-                    return {}
+                    raise NotImplementedError("This is not yet implemented")
                 case _:
                     resp[key] = "unsupported key"
 
