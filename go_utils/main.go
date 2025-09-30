@@ -63,6 +63,7 @@ func matrixToOrientationVector(m11, m12, m13, m21, m22, m23, m31, m32, m33 float
 }
 
 func main() {
+
 	if len(os.Args) < 2 {
 		fmt.Fprintf(os.Stderr, "Usage:\n")
 		fmt.Fprintf(os.Stderr, "  Convert orientation vector to rotation matrix:\n")
@@ -130,6 +131,23 @@ func main() {
 			matrixElements[3], matrixElements[4], matrixElements[5], // Row 2
 			matrixElements[6], matrixElements[7], matrixElements[8], // Row 3
 		)
+
+	case "joints2pose":
+		if len(os.Args) != 6 {
+			fmt.Fprintf(os.Stderr, "Usage: %s joints2pose joints[0] joints[1] joints[2] joints[3] joints[4] joints[5]\n", os.Args[0])
+			os.Exit(1)
+		}
+
+		// Parse joint values
+		var jointElements [6]float64
+		for i := 0; i < 6; i++ {
+			val, err := strconv.ParseFloat(os.Args[i+2], 64)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error parsing matrix element %d: %v\n", i+1, err)
+				os.Exit(1)
+			}
+			jointElements[i] = val
+		}
 
 	default:
 		// For backward compatibility, if no command is specified but we have 4 args,

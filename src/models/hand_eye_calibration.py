@@ -1,7 +1,7 @@
 import asyncio
 import cv2
 import numpy as np
-from typing import ClassVar, Final, Mapping, Optional, Sequence, Tuple
+from typing import ClassVar, Mapping, Optional, Sequence, Tuple
 
 from typing_extensions import Self
 from viam.components.arm import Arm, JointPositions
@@ -107,11 +107,40 @@ class HandEyeCalibration(Generic, EasyResource):
         motion: Motion = attrs.get(motion_attr)
         self.motion: Motion = dependencies.get(Motion.get_resource_name(motion))
 
-        self.joint_positions = attrs.get(joint_positions_attr)
+        self.joint_positions = attrs.get(joint_positions_attr, [])
         self.sleep_seconds = attrs.get(sleep_attr, 1.0)
-        self.joint_positions = []
 
         return super().reconfigure(config, dependencies)
+    
+    async def get_calibration_values(self):
+        arm_pose = await self.arm.get_end_position()
+        self.logger.debug(f"Found end of are pose: {arm_pose}")
+
+        R_g2b = call_go_ov2mat(
+            arm_pose.o_x, 
+            arm_pose.o_y, 
+            arm_pose.o_z, 
+            arm_pose.theta
+        )
+        t_g2b = np.array([arm_pose.x], [arm_pose.y], [arm_pose.z], dtype=np.float64)
+
+        # Get pose of the tag
+        tag_poses: dict = await self.pose_tracker.get_poses()
+        if tag_poses is None:
+            self.logger.warning("Could not find any tags in camera frame. Check to make sure there is a tag in view.")
+        if len(tag_poses.items) > 1:
+            self.logger.warning("More than 1 tag detected in camera frame. Please remove any other tags in view.")
+        
+        tag_pose: Pose = tag_poses.values()[0]
+        R_t2c = call_go_ov2mat(
+            tag_pose.o_x,
+            tag_pose.o_y,
+            tag_pose.o_z,
+            tag_pose.theta
+        )
+        t_t2c = np.array([tag_pose.x], [tag_pose.y], [tag_pose.z], dtype=np.float64)
+
+        return R_g2b, t_g2b, R_t2c, t_t2c
 
     async def do_command(
         self,
@@ -149,46 +178,24 @@ class HandEyeCalibration(Generic, EasyResource):
                             # Sleep for the configured amount of time to allow the arm and camera to settle
                             await asyncio.sleep(self.sleep_seconds)
 
-                            arm_pose = await self.arm.get_end_position()
-                            self.logger.debug(f"Found end of are pose: {arm_pose}")
-
-                            R_g2b = call_go_ov2mat(
-                                arm_pose.o_x, 
-                                arm_pose.o_y, 
-                                arm_pose.o_z, 
-                                arm_pose.theta
-                            )
-                            if R_g2b is None:
-                                self.logger.warning("Failed to convert arm orientation vector to rotation matrix")
-                                continue
-                            t_g2b = np.array([arm_pose.x], [arm_pose.y], [arm_pose.z], dtype=np.float64)
-
-                            # Get pose of the tag
-                            tag_poses: dict = await self.pose_tracker.get_poses()
-                            if tag_poses is None:
-                                raise Exception("Could not find any tags in camera frame. Check to make sure there is a tag in view.")
-                            if len(tag_poses.items) > 1:
-                                raise Exception("More than 1 tag detected in camera frame. Please remove any other tags in view.")
-                            
-                            tag_pose: Pose = tag_poses.values()[0]
-                            R_t2c = call_go_ov2mat(
-                                tag_pose.o_x,
-                                tag_pose.o_y,
-                                tag_pose.o_z,
-                                tag_pose.theta
-                            )
-                            if R_t2c is None:
-                                self.logger.warning("Failed to convert tag orientation vector to rotation matrix.")
-                            t_t2c = np.array([tag_pose.x], [tag_pose.y], [tag_pose.z], dtype=np.float64)
-
+                            R_g2b, t_g2b, R_t2c, t_t2c = await self.get_calibration_values()
                             if R_g2b is None or t_g2b is None or R_t2c is None or t_t2c is None:
-                                self.logger.warning("Missing data. Skipping this pose.")
+                                self.logger.warning(f"Could not find calibration values for pose {i+1}/{len(self.joint_positions)}")
                                 continue
 
                             R_gripper2base_list.append(R_g2b.T)
                             t_gripper2base_list.append(t_g2b)
                             R_target2cam_list.append(R_t2c.T)
                             t_target2cam_list.append(t_t2c)
+                    else:
+                        try:
+                            success = await self.motion.move(
+                                component_name=self.arm.name,
+                                destination=None,
+                            )
+                        except Exception as e:
+                            raise Exception(e)
+
 
                     pose = cv2.calibrateHandEye(
                         R_gripper2base=R_gripper2base_list,
