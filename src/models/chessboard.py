@@ -16,7 +16,7 @@ from viam.resource.easy_resource import EasyResource
 from viam.resource.types import Model, ModelFamily
 from viam.utils import struct_to_dict, ValueTypes
 
-from ..utils.utils import call_go_mat2ov
+from utils.utils import call_go_mat2ov
 
 
 # required attributes
@@ -85,8 +85,11 @@ class Chessboard(PoseTracker, EasyResource):
 
         camera: str = attrs.get(cam_attr)
         self.camera: Camera = dependencies.get(Camera.get_resource_name(camera))
+        if self.camera is None:
+            raise Exception(f"Could not find camera resource {camera}")
         
-        self.pattern_size = attrs.get(pattern_attr)
+        pattern_list: list = attrs.get(pattern_attr)
+        self.pattern_size = [int(x) for x in pattern_list]
         self.square_size = attrs.get(square_attr)
 
         return super().reconfigure(config, dependencies)
@@ -126,16 +129,15 @@ class Chessboard(PoseTracker, EasyResource):
     ) -> Dict[str, PoseInFrame]:
         
         cam_images = await self.camera.get_images()
-        for image in cam_images[0]:
+        pil_image = None
+        for cam_image in cam_images[0]:
             # Accept any standard image format that viam_to_pil_image can handle
-            if image.mime_type in [CameraMimeType.JPEG, CameraMimeType.PNG, CameraMimeType.VIAM_RGBA]:
-                viam_image = image.data
-                self.logger.debug(f"Found {image.mime_type} image from camera")
+            if cam_image.mime_type in [CameraMimeType.JPEG, CameraMimeType.PNG, CameraMimeType.VIAM_RGBA]:
+                pil_image = viam_to_pil_image(cam_image)
+                self.logger.debug(f"Found {cam_image.mime_type} image from camera")
                 break
-        if viam_image is None:
-            raise Exception("Could not get latest image from camera")
-        
-        pil_image = viam_to_pil_image(viam_image)
+        if pil_image is None:
+            raise Exception("Could not get latest image from camera")        
         image = np.array(pil_image)
         
         # Convert to grayscale if needed
@@ -174,21 +176,20 @@ class Chessboard(PoseTracker, EasyResource):
         # Convert rotation vector to rotation matrix
         R, _ = cv2.Rodrigues(rvec)
 
-        # TODO: Confirm this below
         # Transpose needed due to frame convention mismatch:
         # OpenCV solvePnP returns object -> camera transform, but Viam expects camera -> object transform.
         ox, oy, oz, theta = call_go_mat2ov(R.T)
         self.logger.debug(f"Translated roation matrix to orientation vector with values ox={ox}, oy={oy}, oz={oz}, theta={theta}")
         
         # Convert tvec to column vector (3x1)
-        t = tvec.reshape(3, 1) * 1000  # Convert to mm
+        t = tvec.reshape(3, 1)
 
         pose_in_frame = PoseInFrame(
             reference_frame=self.camera.name,
             pose=Pose(
-                x=t[0],
-                y=t[1],
-                z=t[2],
+                x=t[0][0],
+                y=t[1][0],
+                z=t[2][0],
                 o_x=ox,
                 o_y=oy,
                 o_z=oz,
@@ -196,7 +197,7 @@ class Chessboard(PoseTracker, EasyResource):
             )
         )
         
-        return {"pose", pose_in_frame}
+        return {"pose": pose_in_frame}
 
     async def do_command(
         self,

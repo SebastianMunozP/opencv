@@ -165,3 +165,7 @@ cython_debug/
 
 # Orientation converter go module
 orientation_converter/orientation_converter
+
+# Viam reload files
+.VIAM_RELOAD_ARCHIVE.tar.gz
+reload-*/
