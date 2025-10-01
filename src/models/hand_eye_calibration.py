@@ -169,7 +169,9 @@ class HandEyeCalibration(Generic, EasyResource):
 
                             self.logger.debug(f"Moving to pose {i+1}/{len(self.joint_positions)}")
 
-                            jp = JointPositions(values=joints)
+                            # Python SDK requires degrees for joint positions
+                            joints_deg = [np.degrees(joint) for joint in joints]
+                            jp = JointPositions(values=joints_deg)
                             await self.arm.move_to_joint_positions(jp)
                             while await self.arm.is_moving():
                                 await asyncio.sleep(0.05)
