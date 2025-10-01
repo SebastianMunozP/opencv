@@ -1,7 +1,7 @@
 import cv2
 import numpy as np
 
-from typing import (Any, ClassVar, Dict, Final, List, Mapping, Optional,
+from typing import (Any, ClassVar, Dict, List, Mapping, Optional,
                     Sequence, Tuple)
 
 from typing_extensions import Self
@@ -16,7 +16,7 @@ from viam.resource.easy_resource import EasyResource
 from viam.resource.types import Model, ModelFamily
 from viam.utils import struct_to_dict, ValueTypes
 
-from ..utils.utils import call_go_ov2mat, call_go_mat2ov
+from utils.utils import call_go_mat2ov
 
 
 # required attributes
@@ -85,30 +85,33 @@ class Chessboard(PoseTracker, EasyResource):
 
         camera: str = attrs.get(cam_attr)
         self.camera: Camera = dependencies.get(Camera.get_resource_name(camera))
+        if self.camera is None:
+            raise Exception(f"Could not find camera resource {camera}")
         
-        self.pattern_size = attrs.get(pattern_attr)
+        pattern_list: list = attrs.get(pattern_attr)
+        self.pattern_size = [int(x) for x in pattern_list]
         self.square_size = attrs.get(square_attr)
 
         return super().reconfigure(config, dependencies)
     
     async def get_camera_intrinsics(self) -> tuple:
         """Get camera intrinsic parameters"""
-        properties = await self.camera.get_properties()
-        intrinsics = properties.intrinsic_parameters
+        camera_params = await self.camera.do_command({"get_camera_params": None})
+        intrinsics = camera_params["Color"]["intrinsics"]
+        dist_params = camera_params["Color"]["distortion"]
         
         K = np.array([
-            [intrinsics.focal_x_px, 0, intrinsics.center_x_px],
-            [0, intrinsics.focal_y_px, intrinsics.center_y_px],
+            [intrinsics["fx"], 0, intrinsics["cx"]],
+            [0, intrinsics["fy"], intrinsics["cy"]],
             [0, 0, 1]
         ], dtype=np.float32)
         
-        # These are values from viam's do command
         dist = np.array([
-            0.11473497003316879,    # k1 - radial distortion
-            -0.31621694564819336,  # k2 - radial distortion  
-            0.00024490756914019585,    # p1 - tangential distortion
-            -0.0002616790879983455,    # p2 - tangential distortion
-            0.2385278344154358     # k3 - radial distortion
+            dist_params["k1"],
+            dist_params["k2"],  
+            dist_params["p1"],  
+            dist_params["p2"],    
+            dist_params["k3"]
         ], dtype=np.float32)
         
         self.logger.debug(f"Camera intrinsics: K shape={K.shape}, dist shape={dist.shape}")
@@ -126,17 +129,15 @@ class Chessboard(PoseTracker, EasyResource):
     ) -> Dict[str, PoseInFrame]:
         
         cam_images = await self.camera.get_images()
-        for image in cam_images[0]:
-            # TODO: Check if we should only receive JPEG images. I feel like we should expand to any image format
-            if image.mime_type == CameraMimeType.JPEG:
-                viam_image = cam_images[0][0].data
-                self.logger.debug("Found image from camera")
-        if viam_image is None:
-            err = "Could not get latest image from camera"
-            self.logger.error(err)
-            return err, None
-        
-        pil_image = viam_to_pil_image(viam_image)
+        pil_image = None
+        for cam_image in cam_images[0]:
+            # Accept any standard image format that viam_to_pil_image can handle
+            if cam_image.mime_type in [CameraMimeType.JPEG, CameraMimeType.PNG, CameraMimeType.VIAM_RGBA]:
+                pil_image = viam_to_pil_image(cam_image)
+                self.logger.debug(f"Found {cam_image.mime_type} image from camera")
+                break
+        if pil_image is None:
+            raise Exception("Could not get latest image from camera")        
         image = np.array(pil_image)
         
         # Convert to grayscale if needed
@@ -151,9 +152,7 @@ class Chessboard(PoseTracker, EasyResource):
             flags=cv2.CALIB_CB_ADAPTIVE_THRESH + cv2.CALIB_CB_NORMALIZE_IMAGE
         )
         if not found:
-            err = "Could not find chessboard pattern in image"
-            self.logger.error(err)
-            return err, None
+            raise Exception("Could not find chessboard pattern in image")
         self.logger.debug(f"Found chessboard with corners: {corners}")
         
         # Refine corner locations to sub-pixel precision
@@ -177,22 +176,20 @@ class Chessboard(PoseTracker, EasyResource):
         # Convert rotation vector to rotation matrix
         R, _ = cv2.Rodrigues(rvec)
 
-        # TODO: Confirm transposing this matrix is actually needed.
-        # I'm not convinced this is a row-vector/column vector transposing problem.
-        # I think this might be a we're simply just returning the wrong thing in the go RDK.
-        # I think we say we're returning the end of the arm position in base frame, but we might be doing the opposite
+        # Transpose needed due to frame convention mismatch:
+        # OpenCV solvePnP returns object -> camera transform, but Viam expects camera -> object transform.
         ox, oy, oz, theta = call_go_mat2ov(R.T)
         self.logger.debug(f"Translated roation matrix to orientation vector with values ox={ox}, oy={oy}, oz={oz}, theta={theta}")
         
         # Convert tvec to column vector (3x1)
-        t = tvec.reshape(3, 1) * 1000  # Convert to mm
+        t = tvec.reshape(3, 1)
 
         pose_in_frame = PoseInFrame(
             reference_frame=self.camera.name,
             pose=Pose(
-                x=t[0],
-                y=t[1],
-                z=t[2],
+                x=t[0][0],
+                y=t[1][0],
+                z=t[2][0],
                 o_x=ox,
                 o_y=oy,
                 o_z=oz,
@@ -200,7 +197,7 @@ class Chessboard(PoseTracker, EasyResource):
             )
         )
         
-        return "pose", pose_in_frame
+        return {"pose": pose_in_frame}
 
     async def do_command(
         self,
