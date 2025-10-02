@@ -87,7 +87,7 @@ async def collect_calibration_images(cam: Camera, num_images: int = 10) -> list[
     
     while len(base64_images) < num_images:
         current_count = len(base64_images) + 1
-        print(f"\n📸 Capturing image {current_count}/{num_images}...")
+        print(f"\nCapturing image {current_count}/{num_images}...")
         print("Position the chessboard and press Enter when ready...")
         input()
         
@@ -105,12 +105,12 @@ async def collect_calibration_images(cam: Camera, num_images: int = 10) -> list[
                 # Convert to base64 and add to collection
                 base64_img = pil_image_to_base64(pil_image)
                 base64_images.append(base64_img)
-                print(f"✓ Image {current_count}/{num_images} accepted and saved!")
+                print(f"Image {current_count}/{num_images} accepted and saved!")
             else:
-                print("✗ Image rejected. Retaking...")
+                print("Image rejected. Retaking...")
     
     print(f"\n{'='*60}")
-    print(f"✓ Successfully collected all {num_images} images!")
+    print(f"Successfully collected all {num_images} images!")
     print(f"{'='*60}\n")
     
     return base64_images
@@ -134,7 +134,7 @@ async def run_calibration(chessboard: PoseTracker, base64_images: list[str]):
     })
     
     if result.get("success"):
-        print("✓ Calibration successful!\n")
+        print("Calibration successful!\n")
         print(f"RMS Error: {result['rms_error']:.4f}")
         print(f"Images Used: {result['num_images']}")
         print(f"Image Size: {result['image_size']['width']}x{result['image_size']['height']}")
@@ -152,7 +152,7 @@ async def run_calibration(chessboard: PoseTracker, base64_images: list[str]):
         print(f"  p2: {dc['p2']:.6f}")
         print(f"  k3: {dc['k3']:.6f}")
     else:
-        print(f"✗ Calibration failed: {result.get('error', 'Unknown error')}")
+        print(f"Calibration failed: {result.get('error', 'Unknown error')}")
     
     print(f"\n{'='*60}\n")
     return result
@@ -165,7 +165,7 @@ async def main():
         # Connect to robot
         print("Connecting to robot...")
         machine = await connect()
-        print("✓ Connected!\n")
+        print("Connected!\n")
         
         # Get camera and chessboard components
         cam = Camera.from_robot(machine, "orbbec-1")
