@@ -18,10 +18,21 @@ from viam.utils import struct_to_dict, ValueTypes
 
 from utils.utils import call_go_ov2mat, call_go_mat2ov
 
+CALIBS = ["eye-in-hand", "eye-to-hand"]
+METHODS = [
+    "CALIB_HAND_EYE_TSAI",
+    "CALIB_HAND_EYE_PARK",
+    "CALIB_HAND_EYE_HORAUD",
+    "CALIB_HAND_EYE_ANDREFF",
+    "CALIB_HAND_EYE_DANIILIDIS"
+]
+
 # required attributes
 arm_attr = "arm_name"
+calib_attr = "calibration"
 cam_attr = "camera_name"
 joint_positions_attr = "joint_positions"
+method_attr = "method"
 motion_attr = "motion"
 pose_tracker_attr = "pose_tracker"
 sleep_attr = "sleep_seconds"
@@ -81,6 +92,16 @@ class HandEyeCalibration(Generic, EasyResource):
         pose_tracker = attrs.get(pose_tracker_attr)
         if pose_tracker is None:
             raise Exception(f"Missing required {pose_tracker_attr} attribute.")
+        
+        calib = attrs.get(calib_attr)
+        if calib is None:
+            raise Exception(f"Missing required {calib_attr} attribute.")
+        if calib not in CALIBS:
+            raise Exception(f"{calib} is not an available calibration.")
+        
+        method = attrs.get(method_attr)
+        if method not in METHODS:
+            raise Exception(f"{method} is not an available method for calibration.")
 
         return [str(arm), str(cam), str(pose_tracker)], []
 
@@ -107,7 +128,9 @@ class HandEyeCalibration(Generic, EasyResource):
         motion: Motion = attrs.get(motion_attr)
         self.motion: Motion = dependencies.get(Motion.get_resource_name(motion))
 
+        self.calib = attrs.get(calib_attr)
         self.joint_positions = attrs.get(joint_positions_attr, [])
+        self.method = attrs.get(method_attr, "CALIB_HAND_EYE_TSAI")
         self.sleep_seconds = attrs.get(sleep_attr, 1.0)
 
         return super().reconfigure(config, dependencies)
@@ -185,6 +208,8 @@ class HandEyeCalibration(Generic, EasyResource):
                                 self.logger.warning(f"Could not find calibration values for pose {i+1}/{len(self.joint_positions)}")
                                 continue
 
+                            # TODO: Implement eye-to-hand. This should just be changing the
+                            # order/in-frame values 
                             R_gripper2base_list.append(R_g2b.T)
                             t_gripper2base_list.append(t_g2b)
                             R_target2cam_list.append(R_t2c.T)
@@ -203,7 +228,8 @@ class HandEyeCalibration(Generic, EasyResource):
                         R_gripper2base=R_gripper2base_list,
                         t_gripper2base=t_gripper2base_list,
                         R_target2cam=R_target2cam_list,
-                        t_target2cam=t_target2cam_list
+                        t_target2cam=t_target2cam_list,
+                        method=self.method
                     )
                     if pose is None:
                         raise Exception("Could not solve calibration")
