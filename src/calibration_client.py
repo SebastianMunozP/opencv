@@ -170,8 +170,37 @@ async def main():
         # Get camera and chessboard components
         cam = Camera.from_robot(machine, "orbbec-1")
 
-        props = await cam.get_properties()
-        print(props)
+        resp = await cam.do_command({"get_camera_params": ""})
+        
+        # Display camera parameters prettily
+        print(f"\n{'='*60}")
+        print("Color Camera Parameters")
+        print(f"{'='*60}")
+        
+        params = resp["Color"]
+        if 'intrinsics' in params:
+            intrinsics = params['intrinsics']
+            print("\nIntrinsics:")
+            print(f"  fx: {intrinsics.get('fx', 'N/A'):.6f}")
+            print(f"  fy: {intrinsics.get('fy', 'N/A'):.6f}")
+            print(f"  cx: {intrinsics.get('cx', 'N/A'):.6f}")
+            print(f"  cy: {intrinsics.get('cy', 'N/A'):.6f}")
+            print(f"  width: {intrinsics.get('width', 'N/A')}")
+            print(f"  height: {intrinsics.get('height', 'N/A')}")
+        
+        if 'distortion' in params:
+            distortion = params['distortion']
+            print("\nDistortion:")
+            print(f"  k1: {distortion.get('k1', 0.0):.6f}")
+            print(f"  k2: {distortion.get('k2', 0.0):.6f}")
+            print(f"  k3: {distortion.get('k3', 0.0):.6f}")
+            print(f"  k4: {distortion.get('k4', 0.0):.6f}")
+            print(f"  k5: {distortion.get('k5', 0.0):.6f}")
+            print(f"  k6: {distortion.get('k6', 0.0):.6f}")
+            print(f"  p1: {distortion.get('p1', 0.0):.6f}")
+            print(f"  p2: {distortion.get('p2', 0.0):.6f}")
+        
+        print(f"\n{'='*60}\n")
 
         chessboard = PoseTracker.from_robot(machine, "pose-tracker-1")
         
