@@ -156,8 +156,7 @@ class Chessboard(PoseTracker, EasyResource):
         # Solve PnP to get pose
         success, rvec, tvec = cv2.solvePnP(objp, corners, K, dist)
         if not success:
-            print("Could not solve PnP for chessboard")
-            return None, None
+            raise Exception("Could not solve PnP for chessboard")
         self.logger.debug(f"Solved PnP")
         self.logger.debug(f"Rotation vector: {rvec}")
         self.logger.debug(f"Translation vector: {tvec}")
