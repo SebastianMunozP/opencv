@@ -2,7 +2,7 @@
   "$schema": "https://dl.viam.dev/module.schema.json",
   "module_id": "viam:opencv",
   "visibility": "public",
-  "url": "",
+  "url": "https://github.com/viam-labs/opencv",
   "description": "Modular pose_tracker component: chessboard",
   "models": [
     {
