@@ -1,14 +1,14 @@
 import asyncio
 import cv2
 import numpy as np
-from typing import ClassVar, Mapping, Optional, Sequence, Tuple
+from typing import ClassVar, Dict, Mapping, Optional, Sequence, Tuple
 
 from typing_extensions import Self
 from viam.components.arm import Arm, JointPositions
 from viam.components.camera import Camera
 from viam.components.pose_tracker import PoseTracker
 from viam.proto.app.robot import ComponentConfig
-from viam.proto.common import Pose, ResourceName
+from viam.proto.common import Pose, PoseInFrame, ResourceName
 from viam.resource.base import ResourceBase
 from viam.resource.easy_resource import EasyResource
 from viam.resource.types import Model, ModelFamily
@@ -145,23 +145,25 @@ class HandEyeCalibration(Generic, EasyResource):
             arm_pose.o_z, 
             arm_pose.theta
         )
-        t_g2b = np.array([arm_pose.x], [arm_pose.y], [arm_pose.z], dtype=np.float64)
+        t_g2b = np.array([arm_pose.x, arm_pose.y, arm_pose.z], dtype=np.float64)
 
         # Get pose of the tag
-        tag_poses: dict = await self.pose_tracker.get_poses()
-        if tag_poses is None:
-            self.logger.warning("Could not find any tags in camera frame. Check to make sure there is a tag in view.")
-        if len(tag_poses.items) > 1:
-            self.logger.warning("More than 1 tag detected in camera frame. Please remove any other tags in view.")
+        tag_poses: Dict[str, PoseInFrame] = await self.pose_tracker.get_poses(body_names=[])
+        if tag_poses is None or len(tag_poses) == 0:
+            self.logger.warning("could not find any tags in camera frame. Check to make sure there is a tag in view.")
+            raise Exception("could not find any tags in camera frame. Check to make sure there is a tag in view.")
+        if len(tag_poses.items()) > 1:
+            self.logger.warning("more than 1 tag detected in camera frame. Please remove any other tags in view.")
+            raise Exception("more than 1 tag detected in camera frame. Please remove any other tags in view.")
         
-        tag_pose: Pose = tag_poses.values()[0]
+        tag_pose: Pose = list(tag_poses.values())[0].pose
         R_t2c = call_go_ov2mat(
             tag_pose.o_x,
             tag_pose.o_y,
             tag_pose.o_z,
             tag_pose.theta
         )
-        t_t2c = np.array([tag_pose.x], [tag_pose.y], [tag_pose.z], dtype=np.float64)
+        t_t2c = np.array([tag_pose.x, tag_pose.y, tag_pose.z], dtype=np.float64)
 
         return R_g2b, t_g2b, R_t2c, t_t2c
 
@@ -208,6 +210,8 @@ class HandEyeCalibration(Generic, EasyResource):
                                 self.logger.warning(f"Could not find calibration values for pose {i+1}/{len(self.joint_positions)}")
                                 continue
 
+                            self.logger.info(f"successfully collected calibration data for pose {i+1}/{len(self.joint_positions)}")
+
                             # TODO: Implement eye-to-hand. This should just be changing the
                             # order/in-frame values 
                             R_gripper2base_list.append(R_g2b.T)
@@ -224,24 +228,62 @@ class HandEyeCalibration(Generic, EasyResource):
                         except Exception as e:
                             raise Exception(e)
 
-                    pose = cv2.calibrateHandEye(
+                    # Check if we have enough measurements
+                    if len(R_gripper2base_list) < 3:
+                        raise Exception(f"not enough valid measurements collected. Got {len(R_gripper2base_list)}, need at least 3. Make sure the pose tracker can see exactly one tag in each calibration position.")
+
+                    self.logger.info(f"collected {len(R_gripper2base_list)} measurements, running calibration...")
+
+                    R_cam2gripper, t_cam2gripper = cv2.calibrateHandEye(
                         R_gripper2base=R_gripper2base_list,
                         t_gripper2base=t_gripper2base_list,
                         R_target2cam=R_target2cam_list,
                         t_target2cam=t_target2cam_list,
-                        method=self.method
+                        method=getattr(cv2, self.method)
                     )
-                    if pose is None:
-                        raise Exception("Could not solve calibration")
+                    if R_cam2gripper is None or t_cam2gripper is None:
+                        raise Exception("could not solve calibration")
                     
-                    viam_pose: Pose = call_go_mat2ov(pose)
+                    # Convert rotation matrix to orientation vector
+                    orientation_result = call_go_mat2ov(R_cam2gripper)
+                    if orientation_result is None:
+                        raise Exception("failed to convert rotation matrix to orientation vector")
+                    ox, oy, oz, theta = orientation_result
+                    
+                    # Extract translation components
+                    x = float(t_cam2gripper[0][0])
+                    y = float(t_cam2gripper[1][0])
+                    z = float(t_cam2gripper[2][0])
 
-                    resp["run_calibration"] = viam_pose
+                    viam_pose = Pose(x=x, y=y, z=z, o_x=ox, o_y=oy, o_z=oz, theta=theta)
+
+                    self.logger.info(f"calibration success: {viam_pose}")
+
+                    # Format output to be frame system compatible
+                    resp["run_calibration"] = {
+                        "frame": {
+                            "translation": {
+                                "x": x,
+                                "y": y,
+                                "z": z
+                            },
+                            "orientation": {
+                                "type": "ov_degrees",
+                                "value": {
+                                    "x": ox,
+                                    "y": oy,
+                                    "z": oz,
+                                    "th": theta
+                                }
+                            },
+                            "parent": self.arm.name
+                        }
+                    }
                 case "move_arm": 
                     raise NotImplementedError("This is not yet implemented")
                 case "check_tags":
-                    tag_poses: dict = await self.pose_tracker.get_poses()
-                    if tag_poses is None:
+                    tag_poses: Dict[str, PoseInFrame] = await self.pose_tracker.get_poses(body_names=[])
+                    if tag_poses is None or len(tag_poses) == 0:
                         resp["check_tags"] = "No tags found in image"
                         break
 

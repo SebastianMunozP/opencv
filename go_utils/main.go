@@ -27,11 +27,6 @@ func orientationVectorToMatrix(ox, oy, oz, theta float64) {
 	// Get the rotation matrix
 	rotMatrix := pose.Orientation().RotationMatrix()
 
-	output := [][]float64{{rotMatrix.Row(0).X, rotMatrix.Row(0).Y, rotMatrix.Row(0).Z},
-		{rotMatrix.Row(1).X, rotMatrix.Row(1).Y, rotMatrix.Row(1).Z},
-		{rotMatrix.Row(2).X, rotMatrix.Row(2).Y, rotMatrix.Row(2).Z}}
-	fmt.Printf("rotMatrix: %v\n", output)
-
 	// Output the rotation matrix as 9 space-separated values (row-major order)
 	for i := 0; i < 3; i++ {
 		for j := 0; j < 3; j++ {
