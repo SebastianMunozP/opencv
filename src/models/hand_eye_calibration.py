@@ -137,7 +137,7 @@ class HandEyeCalibration(Generic, EasyResource):
     
     async def get_calibration_values(self):
         arm_pose = await self.arm.get_end_position()
-        self.logger.debug(f"Found end of are pose: {arm_pose}")
+        self.logger.debug(f"Found end of arm pose: {arm_pose}")
 
         R_g2b = call_go_ov2mat(
             arm_pose.o_x, 
