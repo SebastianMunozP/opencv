@@ -24,8 +24,8 @@ BODY_NAMES = ['corner_53', 'corner_62', 'corner_75']
 TOUCH_PROBE_LENGTH_MM = 113
 PRETOUCH_OFFSET_MM = 30  # additional offset beyond touch probe length
 
-VELOCITY_NORMAL = 48
-VELOCITY_SLOW = 25
+VELOCITY_NORMAL = 25
+VELOCITY_SLOW = 10
 
 WORLD_FRAME = "world"
 COLLISION_FRAME_PROBE = "touch_probe"
@@ -82,6 +82,7 @@ async def move_to_scanning_pose(motion_service: MotionClient, arm: Arm, scanning
         reference_frame=WORLD_FRAME,
         pose=scan_pose
     )
+    
     await motion_service.move(
         component_name=arm.name,
         destination=scan_pose_in_frame
@@ -127,7 +128,9 @@ async def start_touching(motion_service: MotionClient, arm: Arm, poses: Dict[str
                         frame2=frame
                     ) for frame in ALLOWED_PROBE_COLLISION_FRAMES
                 ])
-                constraints = Constraints(collision_specification=[collision_spec])
+                constraints = Constraints(
+                    collision_specification=[collision_spec],
+                )
                 
                 await motion_service.move(
                     component_name=arm.name,
