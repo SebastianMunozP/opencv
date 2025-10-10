@@ -143,13 +143,14 @@ class HandEyeCalibration(Generic, EasyResource):
         arm_pose = await self.arm.get_end_position()
         self.logger.debug(f"Found end of arm pose: {arm_pose}")
 
-        R_g2b = call_go_ov2mat(
-            arm_pose.o_x, 
-            arm_pose.o_y, 
-            arm_pose.o_z, 
+        # Get rotation matrix: base -> gripper
+        R_base2gripper = call_go_ov2mat(
+            arm_pose.o_x,
+            arm_pose.o_y,
+            arm_pose.o_z,
             arm_pose.theta
         )
-        t_g2b = np.array([arm_pose.x, arm_pose.y, arm_pose.z], dtype=np.float64)
+        t_base2gripper = np.array([[arm_pose.x], [arm_pose.y], [arm_pose.z]], dtype=np.float64)
 
         # Get pose from the tracker (AprilTag, chessboard corner, etc.)
         tracked_poses: Dict[str, PoseInFrame] = await self.pose_tracker.get_poses(body_names=[])
@@ -162,16 +163,17 @@ class HandEyeCalibration(Generic, EasyResource):
             self.logger.warning(multiple_bodies_error_msg)
             raise Exception(multiple_bodies_error_msg)
         
+        # Get rotation matrix: camera -> target
         tracked_pose: Pose = list(tracked_poses.values())[0].pose
-        R_t2c = call_go_ov2mat(
+        R_cam2target = call_go_ov2mat(
             tracked_pose.o_x,
             tracked_pose.o_y,
             tracked_pose.o_z,
             tracked_pose.theta
         )
-        t_t2c = np.array([tracked_pose.x, tracked_pose.y, tracked_pose.z], dtype=np.float64)
+        t_cam2target = np.array([[tracked_pose.x], [tracked_pose.y], [tracked_pose.z]], dtype=np.float64)
 
-        return R_g2b, t_g2b, R_t2c, t_t2c
+        return R_base2gripper, t_base2gripper, R_cam2target, t_cam2target
 
     async def do_command(
         self,
@@ -184,6 +186,7 @@ class HandEyeCalibration(Generic, EasyResource):
         for key, value in command.items():
             match key:
                 case "run_calibration":
+                    self.logger.info("Running calibration (everything should be transposed properly now) !!!")
                     # Initialize data collection lists
                     R_gripper2base_list = []
                     t_gripper2base_list = []
@@ -193,10 +196,10 @@ class HandEyeCalibration(Generic, EasyResource):
                     # TODO: Use motion planning if available
                     if self.motion is None:
                         for i, joints in enumerate(self.joint_positions):
-                            R_g2b = None
-                            t_g2b = None
-                            R_t2c = None
-                            t_t2c = None
+                            R_base2gripper = None
+                            t_base2gripper = None
+                            R_cam2target = None
+                            t_cam2target = None
 
                             self.logger.debug(f"Moving to pose {i+1}/{len(self.joint_positions)}")
 
@@ -211,19 +214,27 @@ class HandEyeCalibration(Generic, EasyResource):
                             # Sleep for the configured amount of time to allow the arm and camera to settle
                             await asyncio.sleep(self.sleep_seconds)
 
-                            R_g2b, t_g2b, R_t2c, t_t2c = await self.get_calibration_values()
-                            if R_g2b is None or t_g2b is None or R_t2c is None or t_t2c is None:
+                            R_base2gripper, t_base2gripper, R_cam2target, t_cam2target = await self.get_calibration_values()
+                            if R_base2gripper is None or t_base2gripper is None or R_cam2target is None or t_cam2target is None:
                                 self.logger.warning(f"Could not find calibration values for pose {i+1}/{len(self.joint_positions)}")
                                 continue
 
                             self.logger.info(f"successfully collected calibration data for pose {i+1}/{len(self.joint_positions)}")
 
                             # TODO: Implement eye-to-hand. This should just be changing the
-                            # order/in-frame values 
-                            R_gripper2base_list.append(R_g2b.T)
-                            t_gripper2base_list.append(t_g2b)
-                            R_target2cam_list.append(R_t2c.T)
-                            t_target2cam_list.append(t_t2c)
+                            # order/in-frame values
+
+                            # OpenCV calibrateHandEye expects transposed rotations but original translation vectors
+                            # Only invert rotation matrices, keep translation vectors as-is
+                            R_gripper2base = R_base2gripper.T
+                            t_gripper2base = t_base2gripper
+                            R_target2cam = R_cam2target.T
+                            t_target2cam = t_cam2target
+                            
+                            R_gripper2base_list.append(R_gripper2base)
+                            t_gripper2base_list.append(t_gripper2base)
+                            R_target2cam_list.append(R_target2cam)
+                            t_target2cam_list.append(t_target2cam)
                     else:
                         # TODO: Implement motion service code here
                         try:
@@ -250,16 +261,21 @@ class HandEyeCalibration(Generic, EasyResource):
                     if R_cam2gripper is None or t_cam2gripper is None:
                         raise Exception("could not solve calibration")
                     
-                    # Convert rotation matrix to orientation vector
-                    orientation_result = call_go_mat2ov(R_cam2gripper)
+                    # Convert OpenCV output to frame system format
+                    # Transpose rotation but keep translation as-is (consistent with input handling)
+                    R_gripper2cam = R_cam2gripper.T
+                    t_gripper2cam = t_cam2gripper.reshape(3, 1)
+                    
+                    # Rotation matrix to orientation vector
+                    orientation_result = call_go_mat2ov(R_gripper2cam)
                     if orientation_result is None:
                         raise Exception("failed to convert rotation matrix to orientation vector")
                     ox, oy, oz, theta = orientation_result
                     
-                    # Extract translation components
-                    x = float(t_cam2gripper[0][0])
-                    y = float(t_cam2gripper[1][0])
-                    z = float(t_cam2gripper[2][0])
+                    # Translation
+                    x = float(t_gripper2cam[0][0])
+                    y = float(t_gripper2cam[1][0])
+                    z = float(t_gripper2cam[2][0])
 
                     viam_pose = Pose(x=x, y=y, z=z, o_x=ox, o_y=oy, o_z=oz, theta=theta)
 
