@@ -1,8 +1,7 @@
-import base64
 import cv2
 import numpy as np
 
-from typing import Any, ClassVar, Dict, List, Mapping, Optional, Sequence, Tuple
+from typing import Any, ClassVar, List, Mapping, Optional, Sequence, Tuple
 
 from typing_extensions import Self
 from viam.proto.app.robot import ComponentConfig
@@ -13,10 +12,24 @@ from viam.resource.types import Model, ModelFamily
 from viam.services.generic import Generic
 from viam.utils import struct_to_dict, ValueTypes
 
+try:
+    from utils.chessboard_utils import (
+        detect_chessboard_corners,
+        generate_object_points,
+        decode_base64_image
+    )
+except ModuleNotFoundError:
+    # when running as local module with run.sh
+    from ..utils.chessboard_utils import (
+        detect_chessboard_corners,
+        generate_object_points,
+        decode_base64_image
+    )
+
 
 # Required attributes
-pattern_attr = "pattern_size"
-square_attr = "square_size_mm"
+PATTERN_ATTR = "pattern_size"
+SQUARE_ATTR = "square_size_mm"
 
 
 class CameraCalibration(Generic, EasyResource):
@@ -43,10 +56,10 @@ class CameraCalibration(Generic, EasyResource):
         """
         attrs = struct_to_dict(config.attributes)
 
-        if attrs.get(pattern_attr) is None:
-            raise Exception(f"Missing required {pattern_attr} attribute.")
-        if attrs.get(square_attr) is None:
-            raise Exception(f"Missing required {square_attr} attribute.")
+        if attrs.get(PATTERN_ATTR) is None:
+            raise Exception(f"Missing required {PATTERN_ATTR} attribute.")
+        if attrs.get(SQUARE_ATTR) is None:
+            raise Exception(f"Missing required {SQUARE_ATTR} attribute.")
 
         return [], []
 
@@ -61,81 +74,11 @@ class CameraCalibration(Generic, EasyResource):
         """
         attrs = struct_to_dict(config.attributes)
 
-        pattern_list: list = attrs.get(pattern_attr)
+        pattern_list: list = attrs.get(PATTERN_ATTR)
         self.pattern_size = [int(x) for x in pattern_list]
-        self.square_size = attrs.get(square_attr)
+        self.square_size = attrs.get(SQUARE_ATTR)
 
         return super().reconfigure(config, dependencies)
-
-    def _detect_chessboard_corners(self, image: np.ndarray) -> Optional[np.ndarray]:
-        """Detect and refine chessboard corners in an image.
-
-        Args:
-            image: Input image (grayscale or color)
-
-        Returns:
-            Refined corner locations as (N, 1, 2) array, or None if not found
-        """
-        # Convert to grayscale if needed
-        if len(image.shape) == 3:
-            gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
-        else:
-            gray = image
-
-        # Find chessboard corners
-        found, corners = cv2.findChessboardCorners(
-            gray,
-            tuple(self.pattern_size),
-            flags=cv2.CALIB_CB_ADAPTIVE_THRESH + cv2.CALIB_CB_NORMALIZE_IMAGE
-        )
-
-        if not found:
-            return None
-
-        # Refine corner locations to sub-pixel precision
-        criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 0.001)
-        corners = cv2.cornerSubPix(gray, corners, (11, 11), (-1, -1), criteria)
-
-        return corners
-
-    def _generate_object_points(self) -> np.ndarray:
-        """Generate 3D object points for the chessboard pattern.
-
-        Returns:
-            Object points as (N, 3) array where N is number of corners
-        """
-        objp = np.zeros((self.pattern_size[1] * self.pattern_size[0], 3), np.float32)
-        objp[:, :2] = np.mgrid[0:self.pattern_size[0], 0:self.pattern_size[1]].T.reshape(-1, 2)
-        objp *= self.square_size
-        return objp
-
-    def _decode_base64_image(self, base64_str: str) -> np.ndarray:
-        """Decode a base64 encoded image string to a numpy array.
-
-        Args:
-            base64_str: Base64 encoded image string
-
-        Returns:
-            Image as numpy array
-        """
-        # Remove data URI prefix if present
-        if ',' in base64_str:
-            base64_str = base64_str.split(',', 1)[1]
-
-        # Decode base64 string
-        img_bytes = base64.b64decode(base64_str)
-
-        # Convert to numpy array
-        nparr = np.frombuffer(img_bytes, np.uint8)
-
-        # Decode image
-        image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-
-        # Convert from BGR to RGB (OpenCV loads as BGR)
-        if image is not None and len(image.shape) == 3:
-            image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-
-        return image
 
     async def _calibrate_camera_from_images(self, base64_images: List[str]) -> Mapping[str, Any]:
         """Calibrate camera using provided chessboard images.
@@ -158,7 +101,7 @@ class CameraCalibration(Generic, EasyResource):
         for idx, base64_img in enumerate(base64_images):
             try:
                 # Decode base64 image
-                image = self._decode_base64_image(base64_img)
+                image = decode_base64_image(base64_img)
 
                 if image is None:
                     self.logger.warning(f"Image {idx + 1}: Failed to decode base64 image")
@@ -172,14 +115,14 @@ class CameraCalibration(Generic, EasyResource):
                         image_size = (image.shape[1], image.shape[0])
 
                 # Detect chessboard corners
-                corners = self._detect_chessboard_corners(image)
+                corners = detect_chessboard_corners(image, tuple(self.pattern_size))
 
                 if corners is None:
                     self.logger.warning(f"Image {idx + 1}: Could not find chessboard pattern")
                     continue
 
                 # Add to calibration dataset
-                object_points.append(self._generate_object_points())
+                object_points.append(generate_object_points(tuple(self.pattern_size), self.square_size))
                 image_points.append(corners)
                 successful_detections += 1
 

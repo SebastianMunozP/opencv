@@ -16,7 +16,19 @@ from viam.resource.easy_resource import EasyResource
 from viam.resource.types import Model, ModelFamily
 from viam.utils import struct_to_dict, ValueTypes
 
-from utils.utils import call_go_mat2ov
+try:
+    from utils.utils import call_go_mat2ov
+    from utils.chessboard_utils import (
+        detect_chessboard_corners,
+        generate_object_points
+    )
+except ModuleNotFoundError:
+    # when running as local module with run.sh
+    from ..utils.utils import call_go_mat2ov
+    from ..utils.chessboard_utils import (
+        detect_chessboard_corners,
+        generate_object_points
+    )
 
 
 # required attributes
@@ -143,13 +155,13 @@ class Chessboard(PoseTracker, EasyResource):
         K, dist = await self.get_camera_intrinsics()
 
         # Detect and refine chessboard corners
-        corners = self._detect_chessboard_corners(image)
+        corners = detect_chessboard_corners(image, tuple(self.pattern_size))
         if corners is None:
             raise Exception("Could not find chessboard pattern in image")
         self.logger.debug(f"Found chessboard with corners: {corners}")
-        
+
         # Generate 3D object points for the chessboard
-        objp = self._generate_object_points()
+        objp = generate_object_points(tuple(self.pattern_size), self.square_size)
         
         # Solve PnP to get pose
         success, rvec, tvec = cv2.solvePnP(objp, corners, K, dist)
@@ -186,48 +198,6 @@ class Chessboard(PoseTracker, EasyResource):
         
         return {"pose": pose_in_frame}
 
-    def _detect_chessboard_corners(self, image: np.ndarray) -> Optional[np.ndarray]:
-        """Detect and refine chessboard corners in an image.
-        
-        Args:
-            image: Input image (grayscale or color)
-            
-        Returns:
-            Refined corner locations as (N, 1, 2) array, or None if not found
-        """
-        # Convert to grayscale if needed
-        if len(image.shape) == 3:
-            gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
-        else:
-            gray = image
-        
-        # Find chessboard corners
-        found, corners = cv2.findChessboardCorners(
-            gray,
-            tuple(self.pattern_size),
-            flags=cv2.CALIB_CB_ADAPTIVE_THRESH + cv2.CALIB_CB_NORMALIZE_IMAGE
-        )
-        
-        if not found:
-            return None
-        
-        # Refine corner locations to sub-pixel precision
-        criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 0.001)
-        corners = cv2.cornerSubPix(gray, corners, (11, 11), (-1, -1), criteria)
-        
-        return corners
-    
-    def _generate_object_points(self) -> np.ndarray:
-        """Generate 3D object points for the chessboard pattern.
-        
-        Returns:
-            Object points as (N, 3) array where N is number of corners
-        """
-        objp = np.zeros((self.pattern_size[1] * self.pattern_size[0], 3), np.float32)
-        objp[:, :2] = np.mgrid[0:self.pattern_size[0], 0:self.pattern_size[1]].T.reshape(-1, 2)
-        objp *= self.square_size
-        return objp
-    
     async def do_command(
         self,
         command: Mapping[str, ValueTypes],
