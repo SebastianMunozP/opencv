@@ -16,7 +16,19 @@ from viam.resource.easy_resource import EasyResource
 from viam.resource.types import Model, ModelFamily
 from viam.utils import struct_to_dict, ValueTypes
 
-from utils.utils import call_go_mat2ov
+try:
+    from utils.utils import call_go_mat2ov
+    from utils.chessboard_utils import (
+        detect_chessboard_corners,
+        generate_object_points
+    )
+except ModuleNotFoundError:
+    # when running as local module with run.sh
+    from ..utils.utils import call_go_mat2ov
+    from ..utils.chessboard_utils import (
+        detect_chessboard_corners,
+        generate_object_points
+    )
 
 
 # required attributes
@@ -140,29 +152,16 @@ class Chessboard(PoseTracker, EasyResource):
             raise Exception("Could not get latest image from camera")        
         image = np.array(pil_image)
         
-        # Convert to grayscale if needed
-        if len(image.shape) == 3:
-            image = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
-        
         K, dist = await self.get_camera_intrinsics()
 
-        found, corners = cv2.findChessboardCorners(
-            image,
-            self.pattern_size,
-            flags=cv2.CALIB_CB_ADAPTIVE_THRESH + cv2.CALIB_CB_NORMALIZE_IMAGE
-        )
-        if not found:
+        # Detect and refine chessboard corners
+        corners = detect_chessboard_corners(image, tuple(self.pattern_size))
+        if corners is None:
             raise Exception("Could not find chessboard pattern in image")
         self.logger.debug(f"Found chessboard with corners: {corners}")
-        
-        # Refine corner locations to sub-pixel precision
-        criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 0.001)
-        corners = cv2.cornerSubPix(image, corners, (11, 11), (-1, -1), criteria)
-        
-        # Generate 3D object points for the chessboard (Z=0 plane)
-        objp = np.zeros((self.pattern_size[1] * self.pattern_size[0], 3), np.float32)
-        objp[:, :2] = np.mgrid[0:self.pattern_size[0], 0:self.pattern_size[1]].T.reshape(-1, 2)
-        objp *= self.square_size
+
+        # Generate 3D object points for the chessboard
+        objp = generate_object_points(tuple(self.pattern_size), self.square_size)
         
         # Solve PnP to get pose
         success, rvec, tvec = cv2.solvePnP(objp, corners, K, dist)
@@ -214,4 +213,3 @@ class Chessboard(PoseTracker, EasyResource):
     ) -> Sequence[Geometry]:
         self.logger.error("`get_geometries` is not implemented")
         raise NotImplementedError()
-
