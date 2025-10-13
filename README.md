@@ -139,31 +139,7 @@ The following attributes are available for this model:
 
 Use the `calibrate_camera` command via `do_command` to compute camera intrinsics:
 
-```python
-import base64
-from viam.services.generic import Generic
-
-# Get the camera calibration service
-camera_cal = Generic.from_robot(robot, "camera-calibration-1")
-
-# Capture and encode images at your own pace
-images = []
-for i in range(10):
-    # Capture image from your camera
-    # User can move the chessboard between captures with proper feedback
-    img_data = capture_image()  # Your image capture logic
-
-    # Encode to base64
-    base64_img = base64.b64encode(img_data).decode('utf-8')
-    images.append(base64_img)
-
-# Run calibration
-result = await camera_cal.do_command({
-    "calibrate_camera": {
-        "images": images  # List of base64 encoded image strings
-    }
-})
-```
+See `src/scripts/camera_calibration.py` for a Python script example.
 
 **Parameters:**
 - `images` (required): List of base64 encoded image strings containing chessboard patterns
