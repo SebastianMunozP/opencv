@@ -212,5 +212,5 @@ The command returns a dictionary with the following structure:
 - Capture 10-20 images of the chessboard in different positions and orientations
 - Cover different areas of the camera's field of view
 - Ensure the chessboard is well-lit and in focus in each image
-- Tilt and rotate the chessboard between captures for better calibration
+- Tilt and rotate the chessboard or the camera between captures for better calibration
 - At least 3 valid images are required for calibration to succeed
