@@ -32,8 +32,26 @@ async def connect():
     return await RobotClient.at_address(address, opts)
 
 
-async def get_pretouch_poses(machine: RobotClient, pt: PoseTracker, body_names: list[str], world_frame: str, length_of_touch_tip: float = 0, pretouch_offset_mm: float = DEFAULT_PRETOUCH_OFFSET_MM) -> Dict[str, PoseInFrame]:
+async def get_pretouch_poses(
+    machine: RobotClient,
+    pt: PoseTracker,
+    body_names: list[str],
+    world_frame: str,
+    length_of_touch_tip: float = 0,
+    pretouch_offset_mm: float = DEFAULT_PRETOUCH_OFFSET_MM
+) -> Dict[str, PoseInFrame]:
     poses_in_camera_frame = await pt.get_poses(body_names=body_names)
+    if len(poses_in_camera_frame) == 0:
+        raise Exception("No poses found from pose tracker in camera frame")
+    if len(poses_in_camera_frame) != len(body_names):
+        print(f"poses in camera frame: {poses_in_camera_frame.keys()}")
+        print(f"body names: {body_names}")
+        raise Exception(
+            f"Number of poses found from pose tracker in camera frame "
+            f"({len(poses_in_camera_frame)}) does not match number of body names "
+            f"({len(body_names)})"
+        )
+    
     print("Got poses from pose tracker in camera frame:")
     print(poses_in_camera_frame)
 
@@ -54,7 +72,12 @@ async def get_pretouch_poses(machine: RobotClient, pt: PoseTracker, body_names: 
     return poses_in_camera_frame
 
 
-async def move_to_scanning_pose(motion_service: MotionClient, arm_name: str, scanning_pose: list[float], world_frame: str) -> None:
+async def move_to_scanning_pose(
+    motion_service: MotionClient,
+    arm_name: str,
+    scanning_pose: list[float],
+    world_frame: str
+) -> None:
     print(f"Moving to scanning pose: scanning_pose={scanning_pose}")
     scan_pose = Pose(
         x=scanning_pose[0],
@@ -77,7 +100,15 @@ async def move_to_scanning_pose(motion_service: MotionClient, arm_name: str, sca
     print("Arrived at scanning position")
 
 
-async def start_touching(motion_service: MotionClient, arm: Arm, poses: Dict[str, PoseInFrame], probe_collision_frame: str, allowed_collision_frames: list[str], velocity_normal: float, velocity_slow: float) -> None:
+async def start_touching(
+    motion_service: MotionClient,
+    arm: Arm,
+    poses: Dict[str, PoseInFrame],
+    probe_collision_frame: str,
+    allowed_collision_frames: list[str],
+    velocity_normal: float,
+    velocity_slow: float
+) -> None:
     for pose_name, pose_pretouch in poses.items():
         print(f"Moving to pretouch position: {pose_name}")
         await motion_service.move(

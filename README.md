@@ -193,3 +193,39 @@ The command returns a dictionary with the following structure:
 - Ensure the chessboard is well-lit and in focus in each image
 - Tilt and rotate the chessboard or the camera between captures for better calibration
 - At least 3 valid images are required for calibration to succeed
+
+## Utility Scripts
+
+### Touch Test Script
+
+The `touch_test.py` script is a utility for measuring hand-eye calibration accuracy by physically touching tracked targets (such as chessboard corners) with a calibrated touch probe. By comparing the pose reported by the camera system against the arm's physical position reached by the touch probe, you can quantify the error in the derived hand-eye transformation.
+
+**Location:** `src/scripts/touch_test.py`
+
+**Example usage:**
+```bash
+python3 src/scripts/touch_test.py \
+  --arm-name ur20-modular \
+  --pose-tracker-name pose-tracker-opencv \
+  --motion-service-name motion \
+  --body-names corner_0 corner_1 corner_2 corner_3 corner_4 corner_5 corner_6 corner_7 corner_8 \
+  --probe-collision-frame touch_probe \
+  --allowed-collision-frames pedestal-ur5e apriltags-obstacle chessboard-obstacle \
+  --scanning-pose 100 200 300 0 0 1 0
+```
+
+**Required Arguments:**
+- `--arm-name`: Name of the arm component
+- `--pose-tracker-name`: Name of the pose tracker resource
+- `--motion-service-name`: Name of the motion service
+- `--body-names`: List of body names to track (e.g., `corner_0 corner_1`)
+- `--probe-collision-frame`: Collision frame name for the touch probe
+- `--allowed-collision-frames`: List of collision frames that the probe is allowed to collide with
+
+**Optional Arguments:**
+- `--touch-probe-length-mm`: Length of the touch probe in mm (default: 113)
+- `--pretouch-offset-mm`: Additional offset beyond touch probe length in mm (default: 30)
+- `--velocity-normal`: Normal velocity setting for moving between scanning and various pretouch poses (default: 25)
+- `--velocity-slow`: Slow velocity setting for touching (default: 10)
+- `--world-frame`: Name of the world reference frame (default: "world")
+- `--scanning-pose`: Initial scanning pose as 7 values (x y z o_x o_y o_z theta)
