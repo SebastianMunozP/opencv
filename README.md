@@ -49,6 +49,7 @@ The following attribute template can be used to configure this model:
 ```json
 {
 "arm_name": <string>,
+"body_name": <string>,
 "calibration_type": <string>,
 "camera_name": <string>,
 "joint_positions": <list>,
@@ -66,6 +67,7 @@ The following attributes are available for this model:
 | Name              | Type     | Inclusion  | Description                                                                        |
 |-------------------|----------|------------|------------------------------------------------------------------------------------|
 | `arm_name`        | `string` | `Required` | Name of the arm component used for calibration.                                    |
+| `body_name`       | `string` | `Required` | Name of the specific tracked body to use (e.g., AprilTag ID like "tag36h11:0" or chessboard corner like "corner_0"). Calibration expects exactly one pose. You can call `get_poses` on a pose tracker resource with no body names specified to discover what body names it's providing. **Important**: When using chessboard corners, ensure the chessboard maintains consistent orientation across all calibration poses to ensure the same corner is tracked. |
 | `calibration_type`| `string` | `Required` | Name of the type of calibration to perform.                                        |
 | `camera_name`     | `string` | `Required` | Name of the camera component used for calibration.                                 |
 | `joint_positions` | `list`   | `Required` | List of joint positions for calibration poses.                                     |
@@ -92,12 +94,13 @@ Available methods are:
 ```json
 {
   "arm_name": "my_arm",
+  "body_name": "corner_1",
   "calibration_type": "eye-in-hand",
   "camera_name": "cam",
   "joint_positions": [[0, 0, 0, 0, 0, 0], [0.1, 0.2, 0.3, 0, 0, 0]],
   "method": "CALIB_HAND_EYE_TSAI",
-  "pose_tracker": "tag_tracker",
-  "motion": "motion_service",
+  "pose_tracker": "pose_tracker_opencv",
+  "motion": "motion",
   "sleep_seconds": 2.0
 }
 ```
@@ -139,7 +142,7 @@ The following attributes are available for this model:
 
 Use the `calibrate_camera` command via `do_command` to compute camera intrinsics:
 
-See `src/scripts/camera_calibration_script.py` for the Python script to do so..
+See `src/scripts/camera_calibration_script.py` for the Python script to do so.
 
 **Parameters:**
 - `images` (required): List of base64 encoded image strings containing chessboard patterns
