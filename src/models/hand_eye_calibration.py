@@ -29,6 +29,7 @@ METHODS = [
 
 # required attributes
 ARM_ATTR = "arm_name"
+BODY_NAME_ATTR = "body_name"
 CALIB_ATTR = "calibration_type"
 CAM_ATTR = "camera_name"
 JOINT_POSITIONS_ATTR = "joint_positions"
@@ -107,6 +108,11 @@ class HandEyeCalibration(Generic, EasyResource):
         if method not in METHODS:
             raise Exception(f"{method} is not an available method for calibration.")
 
+        body_name = attrs.get(BODY_NAME_ATTR)
+        if body_name is not None:
+            if not isinstance(body_name, str):
+                raise Exception(f"'{BODY_NAME_ATTR}' must be a string, got {type(body_name)}")
+
         return [str(arm), str(cam), str(pose_tracker)], []
 
     def reconfigure(
@@ -136,6 +142,7 @@ class HandEyeCalibration(Generic, EasyResource):
         self.joint_positions = attrs.get(JOINT_POSITIONS_ATTR, [])
         self.method = attrs.get(METHOD_ATTR, DEFAULT_METHOD)
         self.sleep_seconds = attrs.get(SLEEP_ATTR, DEFAULT_SLEEP_SECONDS)
+        self.body_names = [attrs.get(BODY_NAME_ATTR)] if attrs.get(BODY_NAME_ATTR) is not None else []
 
         return super().reconfigure(config, dependencies)
     
@@ -153,16 +160,22 @@ class HandEyeCalibration(Generic, EasyResource):
         t_base2gripper = np.array([[arm_pose.x], [arm_pose.y], [arm_pose.z]], dtype=np.float64)
 
         # Get pose from the tracker (AprilTag, chessboard corner, etc.)
-        tracked_poses: Dict[str, PoseInFrame] = await self.pose_tracker.get_poses(body_names=[])
+        tracked_poses: Dict[str, PoseInFrame] = await self.pose_tracker.get_poses(body_names=self.body_names)
         if tracked_poses is None or len(tracked_poses) == 0:
-            no_bodies_error_msg = "could not find any tracked bodies in camera frame. Check to make sure a calibration target is in view."
+            no_bodies_error_msg = "could not find any tracked bodies in camera frame"
+            if self.body_names:
+                no_bodies_error_msg += f" (looking for: {self.body_names})"
+            no_bodies_error_msg += ". Check to make sure a calibration target is in view."
             self.logger.warning(no_bodies_error_msg)
             raise Exception(no_bodies_error_msg)
         if len(tracked_poses.items()) > 1:
-            multiple_bodies_error_msg = "more than 1 body detected in camera frame. Ensure only one calibration target is visible or filter out other bodies."
+            multiple_bodies_error_msg = (
+                f"more than 1 body detected was returned from the pose tracker: {tracked_poses.keys()}."
+                " Ensure only one calibration target is visible or set the 'body_name' config attribute"
+                " to one of the aforementioned body names to filter for a specific tracked body."
+            )
             self.logger.warning(multiple_bodies_error_msg)
             raise Exception(multiple_bodies_error_msg)
-        
         # Get rotation matrix: camera -> target
         tracked_pose: Pose = list(tracked_poses.values())[0].pose
         R_cam2target = call_go_ov2mat(
@@ -303,7 +316,7 @@ class HandEyeCalibration(Generic, EasyResource):
                 case "move_arm": 
                     raise NotImplementedError("This is not yet implemented")
                 case "check_tags":
-                    tracked_poses: Dict[str, PoseInFrame] = await self.pose_tracker.get_poses(body_names=[])
+                    tracked_poses: Dict[str, PoseInFrame] = await self.pose_tracker.get_poses(body_names=self.body_names)
                     if tracked_poses is None or len(tracked_poses) == 0:
                         resp["check_tags"] = "No tracked bodies found in image"
                         break
@@ -344,7 +357,7 @@ class HandEyeCalibration(Generic, EasyResource):
 
                     # TODO: Implement using motion service 
 
-                    tracked_poses: dict = await self.pose_tracker.get_poses()
+                    tracked_poses: dict = await self.pose_tracker.get_poses(body_names=self.body_names)
                     if tracked_poses is None:
                         resp["move_arm_to_position"] = "No tracked bodies found in image"
                         break

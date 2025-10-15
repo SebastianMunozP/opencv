@@ -23,6 +23,13 @@ def detect_chessboard_corners(
 
     Returns:
         Refined corner locations as (N, 1, 2) array, or None if not found
+
+    Note:
+        OpenCV's findChessboardCorners returns corners in a consistent order:
+        - Starts from one corner and proceeds row by row
+        - The starting corner is determined by the chessboard orientation in the image
+        - For consistent corner numbering across multiple views (e.g., for hand-eye calibration),
+          ensure the chessboard maintains the same orientation relative to the camera
     """
     # Convert to grayscale if needed
     if len(image.shape) == 3:
