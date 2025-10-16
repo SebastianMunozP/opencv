@@ -121,8 +121,10 @@ class HandEyeCalibration(Generic, EasyResource):
             viam_utils = attrs.get(VIAM_UTILS)
             if viam_utils is None:
                 raise Exception(f"{VIAM_UTILS} must be configured with motion planning.")
-            optional_deps.append(str(viam_utils))
             optional_deps.append(str(motion))
+            optional_deps.append(str(viam_utils))
+        else:
+            raise Exception(f"Missing {MOTION_ATTR} attribute!!!: {motion}")
 
         return [str(arm), str(cam), str(pose_tracker)], optional_deps
 
@@ -149,9 +151,14 @@ class HandEyeCalibration(Generic, EasyResource):
         motion = attrs.get(MOTION_ATTR)
         self.motion: Optional[Motion] = dependencies.get(Motion.get_resource_name(motion)) if motion else None
         self.viam_utils: Optional[Generic] = None
+        self.logger.debug(f"Dependencies: {dependencies}")
         if self.motion is not None:
+            self.logger.debug(f"Motion service configured: {self.motion.name}")
             viam_utils = attrs.get(VIAM_UTILS)
             self.viam_utils = dependencies.get(Generic.get_resource_name(viam_utils))
+            self.logger.debug(f"Viam utils service configured: {self.viam_utils.name}")
+        else:
+            self.logger.debug("No motion service configured, using direct joint position control")
 
         self.calib = attrs.get(CALIB_ATTR)
         self.joint_positions = attrs.get(JOINT_POSITIONS_ATTR, [])
@@ -383,8 +390,8 @@ class HandEyeCalibration(Generic, EasyResource):
 
                     # TODO: Implement using motion service 
 
-                    tracked_poses: dict = await self.pose_tracker.get_poses(body_names=self.body_names)
-                    if tracked_poses is None:
+                    tracked_poses: Optional[Dict[str, PoseInFrame]] = await self.pose_tracker.get_poses(body_names=self.body_names)
+                    if tracked_poses is None or len(tracked_poses) == 0:
                         resp["move_arm_to_position"] = "No tracked bodies found in image"
                         break
 
