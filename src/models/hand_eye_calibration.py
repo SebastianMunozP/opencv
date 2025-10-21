@@ -355,13 +355,13 @@ class HandEyeCalibration(Generic, EasyResource):
                     }
                 case "move_arm": 
                     raise NotImplementedError("This is not yet implemented")
-                case "check_tags":
+                case "check_bodies":
                     tracked_poses: Dict[str, PoseInFrame] = await self.pose_tracker.get_poses(body_names=self.body_names)
                     if tracked_poses is None or len(tracked_poses) == 0:
-                        resp["check_tags"] = "No tracked bodies found in image"
+                        resp["check_bodies"] = "No tracked bodies found in image"
                         break
 
-                    resp["check_tags"] = f"Number of tracked bodies seen: {len(tracked_poses)}"
+                    resp["check_bodies"] = f"Number of tracked bodies seen: {len(tracked_poses)}"
                 case "get_current_arm_pose":
                     arm_pose = await self.arm.get_end_position()
                     if arm_pose is None:
@@ -377,27 +377,6 @@ class HandEyeCalibration(Generic, EasyResource):
                         "o_z": arm_pose.o_z,
                         "theta": arm_pose.theta
                     }
-                case "save_calibration_position":
-                    # Only available in joint position mode (when motion is not configured)
-                    if self.motion is not None:
-                        resp["save_calibration_position"] = "This command is only available when using joint positions (no motion service configured). Use 'get_current_arm_pose' instead."
-                        break
-
-                    index = int(value)
-
-                    arm_joint_pos = await self.arm.get_joint_positions()
-                    if arm_joint_pos is None:
-                        resp["save_calibration_position"] = "Could not get joint positions of arm"
-                        break
-
-                    if index < 0:
-                        self.joint_positions.append(arm_joint_pos.values)
-                        resp["save_calibration_position"] = f"joint position {len(self.joint_positions) - 1} added to config"
-                    elif index >= len(self.joint_positions):
-                        resp["save_calibration_position"] = f"index {value} is out of range, only {len(self.joint_positions)} are set."
-                    else:
-                        self.joint_positions[index] = arm_joint_pos.values
-                        resp["save_calibration_position"] = f"joint position {index} updated in config"
                 case "move_arm_to_position":
                     # Use poses if available (motion planning mode), otherwise use joint positions
                     if self.motion is not None and self.poses:
