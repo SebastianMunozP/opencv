@@ -234,7 +234,12 @@ class HandEyeCalibration(Generic, EasyResource):
             self.logger.debug(f"Moved arm to pose using motion planning")
         elif is_pose:
             # Direct pose control using arm.move_to_position
-            await self.arm.move_to_position(pose=position_data)
+            try:
+                await self.arm.move_to_position(pose=position_data)
+            except Exception as e:
+                self.logger.error(f"Could not move arm to pose. If the arm does not implement move_to_position, use motion service instead. Error: {e}")
+                raise e
+
             while await self.arm.is_moving():
                 await asyncio.sleep(0.05)
             self.logger.debug(f"Moved arm to pose: {position_data}")
