@@ -1237,6 +1237,19 @@ def generate_comprehensive_statistics(rotation_data):
     sharpness_values = []
     corner_counts = []
     
+    # New: Collect pose accuracy errors (commanded vs actual)
+    pose_position_errors = []
+    pose_orientation_errors = []
+    
+    # Collect temperature data
+    rgb_temps = []
+    main_board_temps = []
+    chip_bottom_temps = []
+    ir_left_temps = []
+    ir_right_temps = []
+    chip_top_temps = []
+    cpu_temps = []
+    
     for pose_data in rotation_data:
         # Hand-eye errors
         if 'hand_eye_errors' in pose_data:
@@ -1255,6 +1268,61 @@ def generate_comprehensive_statistics(rotation_data):
                 sharpness_values.append(stats['sharpness_avg'])
             if 'corners_count_avg' in stats:
                 corner_counts.append(stats['corners_count_avg'])
+        
+        # Pose accuracy errors (commanded vs actual)
+        pose_spec = pose_data.get('pose_spec', {})
+        A_i_pose_raw = pose_data.get('A_i_pose_raw', {})
+        
+        if pose_spec and A_i_pose_raw:
+            # Position error (Euclidean distance)
+            pos_error = np.sqrt(
+                (pose_spec.get('x', 0) - A_i_pose_raw.get('x', 0))**2 +
+                (pose_spec.get('y', 0) - A_i_pose_raw.get('y', 0))**2 +
+                (pose_spec.get('z', 0) - A_i_pose_raw.get('z', 0))**2
+            )
+            pose_position_errors.append(pos_error)
+            
+            # Orientation error (angle between orientation vectors)
+            # Convert to rotation matrices and compute angle difference
+            try:
+                R_spec = call_go_ov2mat(
+                    pose_spec.get('o_x', 0), pose_spec.get('o_y', 0), 
+                    pose_spec.get('o_z', 0), pose_spec.get('theta', 0)
+                )
+                R_actual = call_go_ov2mat(
+                    A_i_pose_raw.get('o_x', 0), A_i_pose_raw.get('o_y', 0),
+                    A_i_pose_raw.get('o_z', 0), A_i_pose_raw.get('theta', 0)
+                )
+                
+                if R_spec is not None and R_actual is not None:
+                    # Compute relative rotation matrix
+                    R_rel = R_actual @ R_spec.T
+                    # Extract rotation angle from rotation matrix
+                    trace = np.trace(R_rel)
+                    angle_error = np.arccos(np.clip((trace - 1) / 2, -1, 1))
+                    pose_orientation_errors.append(np.degrees(angle_error))
+            except:
+                pass  # Skip if orientation conversion fails
+        
+        # Collect temperature data from measurements
+        if 'measurements' in pose_data:
+            for measurement in pose_data['measurements']:
+                if 'camera_temperature' in measurement:
+                    temp = measurement['camera_temperature']
+                    if 'rgb_temp_c' in temp:
+                        rgb_temps.append(temp['rgb_temp_c'])
+                    if 'main_board_temp_c' in temp:
+                        main_board_temps.append(temp['main_board_temp_c'])
+                    if 'chip_bottom_temp_c' in temp:
+                        chip_bottom_temps.append(temp['chip_bottom_temp_c'])
+                    if 'ir_left_temp_c' in temp:
+                        ir_left_temps.append(temp['ir_left_temp_c'])
+                    if 'ir_right_temp_c' in temp:
+                        ir_right_temps.append(temp['ir_right_temp_c'])
+                    if 'chip_top_temp_c' in temp:
+                        chip_top_temps.append(temp['chip_top_temp_c'])
+                    if 'cpu_temp_c' in temp:
+                        cpu_temps.append(temp['cpu_temp_c'])
     
     def calculate_stats(values):
         """Calculate mean, std, min, max for a list of values"""
@@ -1282,12 +1350,25 @@ def generate_comprehensive_statistics(rotation_data):
         'detection': {
             'sharpness': calculate_stats(sharpness_values),
             'corners': calculate_stats(corner_counts)
+        },
+        'pose_accuracy': {
+            'position_error': calculate_stats(pose_position_errors),
+            'orientation_error': calculate_stats(pose_orientation_errors)
+        },
+        'camera_temperature': {
+            'rgb_temp_c': calculate_stats(rgb_temps),
+            'main_board_temp_c': calculate_stats(main_board_temps),
+            'chip_bottom_temp_c': calculate_stats(chip_bottom_temps),
+            'ir_left_temp_c': calculate_stats(ir_left_temps),
+            'ir_right_temp_c': calculate_stats(ir_right_temps),
+            'chip_top_temp_c': calculate_stats(chip_top_temps),
+            'cpu_temp_c': calculate_stats(cpu_temps)
         }
     }
     
     return statistics
 
-def create_comprehensive_statistics_plot(rotation_data, data_dir):
+def create_comprehensive_statistics_plot(rotation_data, data_dir, tag=None):
     """
     Create comprehensive statistics plots for all pose data.
     
@@ -1308,9 +1389,47 @@ def create_comprehensive_statistics_plot(rotation_data, data_dir):
     all_corner_counts = []
     pose_indices = []
     
+    # New: Collect pose accuracy data
+    all_pose_position_errors = []
+    all_pose_orientation_errors = []
+    
     for i, pose_data in enumerate(rotation_data):
         if 'measurements' in pose_data:
             pose_indices.append(pose_data.get('pose_index', i))
+            
+            # Collect pose accuracy data (once per pose, not per measurement)
+            pose_spec = pose_data.get('pose_spec', {})
+            A_i_pose_raw = pose_data.get('A_i_pose_raw', {})
+            
+            if pose_spec and A_i_pose_raw:
+                # Position error (Euclidean distance)
+                pos_error = np.sqrt(
+                    (pose_spec.get('x', 0) - A_i_pose_raw.get('x', 0))**2 +
+                    (pose_spec.get('y', 0) - A_i_pose_raw.get('y', 0))**2 +
+                    (pose_spec.get('z', 0) - A_i_pose_raw.get('z', 0))**2
+                )
+                all_pose_position_errors.append(pos_error)
+                
+                # Orientation error (angle between orientation vectors)
+                try:
+                    R_spec = call_go_ov2mat(
+                        pose_spec.get('o_x', 0), pose_spec.get('o_y', 0), 
+                        pose_spec.get('o_z', 0), pose_spec.get('theta', 0)
+                    )
+                    R_actual = call_go_ov2mat(
+                        A_i_pose_raw.get('o_x', 0), A_i_pose_raw.get('o_y', 0),
+                        A_i_pose_raw.get('o_z', 0), A_i_pose_raw.get('theta', 0)
+                    )
+                    
+                    if R_spec is not None and R_actual is not None:
+                        # Compute relative rotation matrix
+                        R_rel = R_actual @ R_spec.T
+                        # Extract rotation angle from rotation matrix
+                        trace = np.trace(R_rel)
+                        angle_error = np.arccos(np.clip((trace - 1) / 2, -1, 1))
+                        all_pose_orientation_errors.append(np.degrees(angle_error))
+                except:
+                    pass  # Skip if orientation conversion fails
             
             # Collect individual measurement data
             for measurement in pose_data['measurements']:
@@ -1332,8 +1451,11 @@ def create_comprehensive_statistics_plot(rotation_data, data_dir):
         return
     
     # Create comprehensive statistics plot
-    fig, axes = plt.subplots(2, 3, figsize=(18, 12))
-    fig.suptitle('Comprehensive Pose Test Statistics', fontsize=16, fontweight='bold')
+    fig, axes = plt.subplots(3, 2, figsize=(15, 18))
+    title = 'Comprehensive Pose Test Statistics'
+    if tag:
+        title += f' - {tag}'
+    fig.suptitle(title, fontsize=16, fontweight='bold')
     
     # Plot 1: Hand-Eye Rotation Errors
     axes[0, 0].hist(all_rotation_errors, bins=20, alpha=0.7, color='skyblue', edgecolor='black')
@@ -1356,44 +1478,83 @@ def create_comprehensive_statistics_plot(rotation_data, data_dir):
     axes[0, 1].grid(True, alpha=0.3)
     
     # Plot 3: Mean Reprojection Errors
-    axes[0, 2].hist(all_mean_reprojection_errors, bins=20, alpha=0.7, color='orange', edgecolor='black')
-    axes[0, 2].axvline(np.mean(all_mean_reprojection_errors), color='red', linestyle='--', linewidth=2,
+    axes[1, 0].hist(all_mean_reprojection_errors, bins=20, alpha=0.7, color='orange', edgecolor='black')
+    axes[1, 0].axvline(np.mean(all_mean_reprojection_errors), color='red', linestyle='--', linewidth=2,
                       label=f'Mean: {np.mean(all_mean_reprojection_errors):.3f}px')
-    axes[0, 2].set_xlabel('Mean Reprojection Error (pixels)')
-    axes[0, 2].set_ylabel('Frequency')
-    axes[0, 2].set_title('Mean Reprojection Errors')
-    axes[0, 2].legend()
-    axes[0, 2].grid(True, alpha=0.3)
-    
-    # Plot 4: Max Reprojection Errors
-    axes[1, 0].hist(all_max_reprojection_errors, bins=20, alpha=0.7, color='pink', edgecolor='black')
-    axes[1, 0].axvline(np.mean(all_max_reprojection_errors), color='red', linestyle='--', linewidth=2,
-                      label=f'Mean: {np.mean(all_max_reprojection_errors):.3f}px')
-    axes[1, 0].set_xlabel('Max Reprojection Error (pixels)')
+    axes[1, 0].set_xlabel('Mean Reprojection Error (pixels)')
     axes[1, 0].set_ylabel('Frequency')
-    axes[1, 0].set_title('Max Reprojection Errors')
+    axes[1, 0].set_title('Mean Reprojection Errors')
     axes[1, 0].legend()
     axes[1, 0].grid(True, alpha=0.3)
     
-    # Plot 5: Sharpness Values
-    axes[1, 1].hist(all_sharpness_values, bins=20, alpha=0.7, color='purple', edgecolor='black')
-    axes[1, 1].axvline(np.mean(all_sharpness_values), color='red', linestyle='--', linewidth=2,
-                      label=f'Mean: {np.mean(all_sharpness_values):.2f}px')
-    axes[1, 1].set_xlabel('Sharpness (pixels)')
+    # Plot 4: Max Reprojection Errors
+    axes[1, 1].hist(all_max_reprojection_errors, bins=20, alpha=0.7, color='pink', edgecolor='black')
+    axes[1, 1].axvline(np.mean(all_max_reprojection_errors), color='red', linestyle='--', linewidth=2,
+                      label=f'Mean: {np.mean(all_max_reprojection_errors):.3f}px')
+    axes[1, 1].set_xlabel('Max Reprojection Error (pixels)')
     axes[1, 1].set_ylabel('Frequency')
-    axes[1, 1].set_title('Chessboard Sharpness')
+    axes[1, 1].set_title('Max Reprojection Errors')
     axes[1, 1].legend()
     axes[1, 1].grid(True, alpha=0.3)
     
+    # Plot 5: Sharpness Values
+    axes[2, 0].hist(all_sharpness_values, bins=20, alpha=0.7, color='purple', edgecolor='black')
+    axes[2, 0].axvline(np.mean(all_sharpness_values), color='red', linestyle='--', linewidth=2,
+                      label=f'Mean: {np.mean(all_sharpness_values):.2f}px')
+    axes[2, 0].set_xlabel('Sharpness (pixels)')
+    axes[2, 0].set_ylabel('Frequency')
+    axes[2, 0].set_title('Chessboard Sharpness')
+    axes[2, 0].legend()
+    axes[2, 0].grid(True, alpha=0.3)
+    
     # Plot 6: Corner Counts
-    axes[1, 2].hist(all_corner_counts, bins=20, alpha=0.7, color='brown', edgecolor='black')
-    axes[1, 2].axvline(np.mean(all_corner_counts), color='red', linestyle='--', linewidth=2,
+    axes[2, 1].hist(all_corner_counts, bins=20, alpha=0.7, color='brown', edgecolor='black')
+    axes[2, 1].axvline(np.mean(all_corner_counts), color='red', linestyle='--', linewidth=2,
                       label=f'Mean: {np.mean(all_corner_counts):.1f}')
-    axes[1, 2].set_xlabel('Corner Count')
-    axes[1, 2].set_ylabel('Frequency')
-    axes[1, 2].set_title('Detected Corners')
-    axes[1, 2].legend()
-    axes[1, 2].grid(True, alpha=0.3)
+    axes[2, 1].set_xlabel('Corner Count')
+    axes[2, 1].set_ylabel('Frequency')
+    axes[2, 1].set_title('Detected Corners')
+    axes[2, 1].legend()
+    axes[2, 1].grid(True, alpha=0.3)
+    
+    # Add pose accuracy plots if data is available
+    if all_pose_position_errors:
+        # Create a new figure for pose accuracy plots
+        fig2, axes2 = plt.subplots(1, 2, figsize=(12, 5))
+        pose_title = 'Robot Pose Accuracy (Commanded vs Actual)'
+        if tag:
+            pose_title += f' - {tag}'
+        fig2.suptitle(pose_title, fontsize=14, fontweight='bold')
+        
+        # Plot 7: Position Errors
+        axes2[0].hist(all_pose_position_errors, bins=20, alpha=0.7, color='darkgreen', edgecolor='black')
+        axes2[0].axvline(np.mean(all_pose_position_errors), color='red', linestyle='--', linewidth=2,
+                        label=f'Mean: {np.mean(all_pose_position_errors):.3f}mm')
+        axes2[0].set_xlabel('Position Error (mm)')
+        axes2[0].set_ylabel('Frequency')
+        axes2[0].set_title('Robot Position Accuracy')
+        axes2[0].legend()
+        axes2[0].grid(True, alpha=0.3)
+        
+        # Plot 8: Orientation Errors
+        if all_pose_orientation_errors:
+            axes2[1].hist(all_pose_orientation_errors, bins=20, alpha=0.7, color='darkblue', edgecolor='black')
+            axes2[1].axvline(np.mean(all_pose_orientation_errors), color='red', linestyle='--', linewidth=2,
+                            label=f'Mean: {np.mean(all_pose_orientation_errors):.3f}°')
+            axes2[1].set_xlabel('Orientation Error (degrees)')
+            axes2[1].set_ylabel('Frequency')
+            axes2[1].set_title('Robot Orientation Accuracy')
+            axes2[1].legend()
+            axes2[1].grid(True, alpha=0.3)
+        
+        plt.tight_layout()
+        
+        # Save the pose accuracy plot
+        pose_accuracy_file = os.path.join(data_dir, "pose_accuracy_statistics.png")
+        plt.savefig(pose_accuracy_file, dpi=300, bbox_inches='tight')
+        print(f"Pose accuracy statistics plot saved to: {pose_accuracy_file}")
+        
+        plt.close(fig2)
     
     plt.tight_layout()
     
@@ -1403,11 +1564,178 @@ def create_comprehensive_statistics_plot(rotation_data, data_dir):
     print(f"Comprehensive statistics plot saved to: {plot_file}")
     
     # Also create a summary statistics table plot
-    create_summary_table_plot(rotation_data, data_dir)
+    create_summary_table_plot(rotation_data, data_dir, tag)
+    
+    # Create pose-by-pose error plot
+    create_pose_error_plot(rotation_data, data_dir, tag)
     
     plt.close()
 
-def create_summary_table_plot(rotation_data, data_dir):
+def create_pose_error_plot(rotation_data, data_dir, tag=None):
+    """
+    Create a plot showing rotational and translational errors for each pose index with temperature overlay.
+    
+    Args:
+        rotation_data: List of pose data dictionaries
+        data_dir: Directory to save the plot
+        tag: Optional tag to add to the plot title
+    """
+    if not rotation_data:
+        print("No valid measurement data found for pose error plotting")
+        return
+    
+    # Extract pose indices, errors, and temperatures
+    pose_indices = []
+    rotation_errors = []
+    translation_errors = []
+    rgb_temps = []
+    main_board_temps = []
+
+    for i, pose_data in enumerate(rotation_data):
+        # Determine index robustly
+        pose_index = pose_data.get('pose_index', i)
+
+        # Prefer aggregated stats if present
+        rot_avg = None
+        trans_avg = None
+        stats = pose_data.get('measurement_statistics', {})
+
+        # Newer format uses *_avg keys
+        if 'rotation_error_avg' in stats and 'translation_error_avg' in stats:
+            rot_avg = stats['rotation_error_avg']
+            trans_avg = stats['translation_error_avg']
+        # Older/nested format fallback (not currently used, but keep for resiliency)
+        elif 'rotation_error' in stats and isinstance(stats['rotation_error'], dict):
+            rot_avg = stats['rotation_error'].get('avg')
+            trans_avg = stats.get('translation_error', {}).get('avg')
+        # Final fallback: compute from per-measurement data
+        if rot_avg is None or trans_avg is None:
+            if 'measurements' in pose_data and pose_data['measurements']:
+                rot_list = []
+                trans_list = []
+                for m in pose_data['measurements']:
+                    he = m.get('hand_eye_errors', {})
+                    if 'rotation_error' in he:
+                        rot_list.append(he['rotation_error'])
+                    if 'translation_error' in he:
+                        trans_list.append(he['translation_error'])
+                if rot_avg is None and rot_list:
+                    rot_avg = float(np.mean(rot_list))
+                if trans_avg is None and trans_list:
+                    trans_avg = float(np.mean(trans_list))
+
+        # If we have both, record this pose
+        if rot_avg is not None and trans_avg is not None:
+            pose_indices.append(pose_index)
+            rotation_errors.append(rot_avg)
+            translation_errors.append(trans_avg)
+
+            # Extract temperature data from measurements
+            pose_rgb_temps = []
+            pose_main_board_temps = []
+            if 'measurements' in pose_data:
+                for measurement in pose_data['measurements']:
+                    if 'camera_temperature' in measurement:
+                        temp = measurement['camera_temperature']
+                        if 'rgb_temp_c' in temp:
+                            try:
+                                pose_rgb_temps.append(float(temp['rgb_temp_c']))
+                            except Exception:
+                                pass
+                        if 'main_board_temp_c' in temp:
+                            try:
+                                pose_main_board_temps.append(float(temp['main_board_temp_c']))
+                            except Exception:
+                                pass
+
+            # Use average temperature for this pose
+            rgb_temps.append(np.mean(pose_rgb_temps) if pose_rgb_temps else 0.0)
+            main_board_temps.append(np.mean(pose_main_board_temps) if pose_main_board_temps else 0.0)
+    
+    if not pose_indices:
+        print("No valid pose error data found for plotting")
+        return
+    
+    # Create figure with triple y-axes
+    fig, ax1 = plt.subplots(figsize=(16, 10))
+    
+    # Plot rotation errors on left y-axis
+    color1 = 'tab:blue'
+    ax1.set_xlabel('Pose Index', fontsize=12, fontweight='bold')
+    ax1.set_ylabel('Rotation Error (degrees)', color=color1, fontsize=12, fontweight='bold')
+    line1 = ax1.plot(pose_indices, rotation_errors, 'o-', color=color1, linewidth=2, 
+                     markersize=6, label='Rotation Error', alpha=0.8)
+    ax1.tick_params(axis='y', labelcolor=color1)
+    ax1.grid(True, alpha=0.3)
+    
+    # Create second y-axis for translation errors
+    ax2 = ax1.twinx()
+    color2 = 'tab:red'
+    ax2.set_ylabel('Translation Error (mm)', color=color2, fontsize=12, fontweight='bold')
+    line2 = ax2.plot(pose_indices, translation_errors, 's-', color=color2, linewidth=2, 
+                     markersize=6, label='Translation Error', alpha=0.8)
+    ax2.tick_params(axis='y', labelcolor=color2)
+    
+    # Create third y-axis for temperature (if we have temperature data)
+    if any(t > 0 for t in rgb_temps) or any(t > 0 for t in main_board_temps):
+        ax3 = ax1.twinx()
+        ax3.spines['right'].set_position(('outward', 60))  # Offset the third axis
+        
+        # Plot RGB temperature
+        if any(t > 0 for t in rgb_temps):
+            color3 = 'tab:orange'
+            ax3.set_ylabel('Temperature (°C)', color=color3, fontsize=12, fontweight='bold')
+            line3 = ax3.plot(pose_indices, rgb_temps, '^-', color=color3, linewidth=2, 
+                             markersize=5, label='RGB Temperature', alpha=0.7)
+            ax3.tick_params(axis='y', labelcolor=color3)
+        
+        # Plot main board temperature on the same axis
+        if any(t > 0 for t in main_board_temps):
+            color4 = 'tab:green'
+            line4 = ax3.plot(pose_indices, main_board_temps, 'v-', color=color4, linewidth=2, 
+                             markersize=5, label='Main Board Temperature', alpha=0.7)
+    
+    # Add horizontal lines for mean values
+    mean_rotation = np.mean(rotation_errors)
+    mean_translation = np.mean(translation_errors)
+    
+    ax1.axhline(y=mean_rotation, color=color1, linestyle='--', alpha=0.7, 
+                label=f'Mean Rotation: {mean_rotation:.3f}°')
+    ax2.axhline(y=mean_translation, color=color2, linestyle='--', alpha=0.7, 
+                label=f'Mean Translation: {mean_translation:.3f}mm')
+    
+    # Set title
+    title = 'Pose-by-Pose Hand-Eye Calibration Errors with Temperature'
+    if tag:
+        title += f' - {tag}'
+    plt.title(title, fontsize=16, fontweight='bold', pad=20)
+    
+    # Add legend
+    lines1, labels1 = ax1.get_legend_handles_labels()
+    lines2, labels2 = ax2.get_legend_handles_labels()
+    
+    # Add temperature lines to legend if they exist
+    all_lines = lines1 + lines2
+    all_labels = labels1 + labels2
+    
+    if any(t > 0 for t in rgb_temps) or any(t > 0 for t in main_board_temps):
+        lines3, labels3 = ax3.get_legend_handles_labels()
+        all_lines.extend(lines3)
+        all_labels.extend(labels3)
+    
+    ax1.legend(all_lines, all_labels, loc='upper right', fontsize=10)
+    
+    # Adjust layout
+    plt.tight_layout()
+    
+    # Save the plot
+    plot_file = os.path.join(data_dir, "pose_error_analysis.png")
+    plt.savefig(plot_file, dpi=300, bbox_inches='tight')
+    print(f"Pose error analysis plot saved to: {plot_file}")
+    
+    plt.close()
+
+def create_summary_table_plot(rotation_data, data_dir, tag=None):
     """
     Create a summary statistics table plot.
     
@@ -1450,6 +1778,19 @@ def create_summary_table_plot(rotation_data, data_dir):
          f"{stats['detection']['corners']['max']:.1f}"]
     ]
     
+    # Add pose accuracy data if available
+    if 'pose_accuracy' in stats:
+        if 'position_error' in stats['pose_accuracy']:
+            table_data.append(['Position Error (mm)', f"{stats['pose_accuracy']['position_error']['mean']:.3f}",
+                             f"{stats['pose_accuracy']['position_error']['std']:.3f}",
+                             f"{stats['pose_accuracy']['position_error']['min']:.3f}",
+                             f"{stats['pose_accuracy']['position_error']['max']:.3f}"])
+        if 'orientation_error' in stats['pose_accuracy']:
+            table_data.append(['Orientation Error (°)', f"{stats['pose_accuracy']['orientation_error']['mean']:.3f}",
+                             f"{stats['pose_accuracy']['orientation_error']['std']:.3f}",
+                             f"{stats['pose_accuracy']['orientation_error']['min']:.3f}",
+                             f"{stats['pose_accuracy']['orientation_error']['max']:.3f}"])
+    
     # Create table plot
     fig, ax = plt.subplots(figsize=(12, 8))
     ax.axis('tight')
@@ -1473,7 +1814,10 @@ def create_summary_table_plot(rotation_data, data_dir):
             else:
                 table[(i, j)].set_facecolor('white')
     
-    plt.title('Comprehensive Statistics Summary', fontsize=16, fontweight='bold', pad=20)
+    title = 'Comprehensive Statistics Summary'
+    if tag:
+        title += f' - {tag}'
+    plt.title(title, fontsize=16, fontweight='bold', pad=20)
     
     # Save the table plot
     table_file = os.path.join(data_dir, "statistics_summary_table.png")
@@ -1497,6 +1841,7 @@ async def main(
     use_sb_detection: bool = True,
     resume_from_pose: int = 1,
     data_dir: str = None,
+    tag: str = None,
 ):
     app_client: Optional[AppClient] = None
     machine: Optional[RobotClient] = None
@@ -1544,8 +1889,8 @@ async def main(
             await asyncio.sleep(2.0)  # Settle time
             
             print(f"✅ Moved to reference pose")
-            print(f"⏸️  PAUSING FOR EVALUATION - Press Enter to continue...")
-            input()  # Pause for user evaluation
+            # print(f"⏸️  PAUSING FOR EVALUATION - Press Enter to continue...")
+            # input()  # Pause for user evaluation
             
             # Get the actual pose after movement
             A_0_pose_world_frame_raw = await _get_current_arm_pose(motion_service, arm.name, arm)
@@ -1563,7 +1908,10 @@ async def main(
         # Create or use existing directory for saving data
         if data_dir is None:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            data_dir = f"calibration_data_{timestamp}"
+            if tag:
+                data_dir = f"calibration_data_{timestamp}_{tag}"
+            else:
+                data_dir = f"calibration_data_{timestamp}"
             os.makedirs(data_dir, exist_ok=True)
             print(f"\n=== CREATING NEW DATA DIRECTORY: {data_dir} ===")
         else:
@@ -1573,6 +1921,8 @@ async def main(
             # Extract timestamp from existing directory name for consistency
             if data_dir.startswith("calibration_data_"):
                 timestamp = data_dir.replace("calibration_data_", "")
+                if "_" in timestamp:
+                    timestamp = timestamp.split("_")[0]  # Remove tag if present
             else:
                 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         
@@ -1580,7 +1930,21 @@ async def main(
         log_file = setup_logging(data_dir)
         print(f"Logging to: {log_file}")
         
+        # Record start time
+        start_time = datetime.now()
+        print(f"Test started at: {start_time.strftime('%Y-%m-%d %H:%M:%S')}")
+        
         image = await get_camera_image(camera)
+
+        # Capture camera temperature for reference pose
+        try:
+            temp_response = await camera.do_command({"get_camera_temperature": {}})
+            reference_camera_temperature = temp_response.get("get_camera_temperature", {})
+            print(f"Reference pose camera temperature: RGB={reference_camera_temperature.get('rgb_temp_c', 'N/A'):.1f}°C, "
+                  f"Main Board={reference_camera_temperature.get('main_board_temp_c', 'N/A'):.1f}°C")
+        except Exception as e:
+            print(f"Warning: Could not get camera temperature for reference pose: {e}")
+            reference_camera_temperature = {}
 
         success, rvec, tvec, _, marker_info = get_marker_pose_in_camera_frame(
             image, camera_matrix, dist_coeffs, marker_type=marker_type,
@@ -1625,6 +1989,7 @@ async def main(
                 "theta": A_0_pose_world_frame.theta
             },
             "T_B_0_camera_frame": T_B_0_camera_frame.tolist(),
+            "reference_camera_temperature": reference_camera_temperature,
             "note": "Arm poses have rotation inverted (translation unchanged) before processing"
         }
         with open(os.path.join(data_dir, "calibration_config.json"), "w", encoding='utf-8') as f:
@@ -1737,6 +2102,17 @@ async def main(
             measurements = []
             for measurement_num in range(1, 4):
                 print(f"  Measurement {measurement_num}/3...")
+                
+                # Capture camera temperature
+                try:
+                    temp_response = await camera.do_command({"get_camera_temperature": {}})
+                    camera_temperature = temp_response.get("get_camera_temperature", {})
+                    print(f"    Camera temperature: RGB={camera_temperature.get('rgb_temp_c', 'N/A'):.1f}°C, "
+                          f"Main Board={camera_temperature.get('main_board_temp_c', 'N/A'):.1f}°C")
+                except Exception as e:
+                    print(f"    Warning: Could not get camera temperature: {e}")
+                    camera_temperature = {}
+                
                 measurement = await perform_pose_measurement(
                     camera, camera_matrix, dist_coeffs, marker_type,
                     aruco_id, aruco_size, aruco_dict, pnp_method,
@@ -1744,6 +2120,9 @@ async def main(
                     T_hand_eye, T_A_0_world_frame, T_B_0_camera_frame,
                     A_0_pose_world_frame_raw, motion_service, arm_name, arm
                 )
+                
+                # Add temperature data to measurement
+                measurement['camera_temperature'] = camera_temperature
                 measurements.append(measurement)
                 
                 if measurement is None:
@@ -1828,7 +2207,8 @@ async def main(
                         "hand_eye_errors": measurement['hand_eye_errors'],
                         "mean_reprojection_error": measurement['mean_reprojection_error'],
                         "max_reprojection_error": measurement['max_reprojection_error'],
-                        "sharpness": measurement['sharpness']
+                        "sharpness": measurement['sharpness'],
+                        "camera_temperature": measurement.get('camera_temperature', {})
                     }
                     measurement_results.append(measurement_result)
             
@@ -1906,10 +2286,24 @@ async def main(
         all_poses_for_statistics = rotation_data.copy()
         statistics = generate_comprehensive_statistics(all_poses_for_statistics)
         
+        # Calculate timing statistics
+        end_time = datetime.now()
+        total_runtime = (end_time - start_time).total_seconds()
+        poses_tested = len([p for p in all_poses_for_statistics if p.get('hand_eye_errors')])
+        avg_time_per_pose = total_runtime / poses_tested if poses_tested > 0 else 0
+        
         # Add statistics to the pose data (includes all poses: previous + current run)
         pose_data_with_stats = {
             "poses": rotation_data,
-            "comprehensive_statistics": statistics
+            "comprehensive_statistics": statistics,
+            "timing": {
+                "start_time": start_time.isoformat(),
+                "end_time": end_time.isoformat(),
+                "total_runtime_seconds": total_runtime,
+                "total_runtime_minutes": total_runtime / 60,
+                "poses_tested": poses_tested,
+                "average_time_per_pose_seconds": avg_time_per_pose
+            }
         }
         
         # Save updated pose data with statistics
@@ -1920,7 +2314,9 @@ async def main(
         
         # Create comprehensive statistics plots
         print(f"\n=== CREATING COMPREHENSIVE STATISTICS PLOTS ===")
-        create_comprehensive_statistics_plot(all_poses_for_statistics, data_dir)
+        create_comprehensive_statistics_plot(all_poses_for_statistics, data_dir, tag)
+        create_summary_table_plot(all_poses_for_statistics, data_dir, tag)
+        create_pose_error_plot(all_poses_for_statistics, data_dir, tag)
         
         # Print summary statistics
         print(f"\n📊 SUMMARY STATISTICS:")
@@ -1948,11 +2344,50 @@ async def main(
         print(f"Corners detected: {statistics['detection']['corners']['mean']:.1f} ± {statistics['detection']['corners']['std']:.1f}")
         print(f"  Range: {statistics['detection']['corners']['min']:.0f} - {statistics['detection']['corners']['max']:.0f}")
         
+        # Add pose accuracy statistics if available
+        if 'pose_accuracy' in statistics:
+            print(f"\n🤖 ROBOT POSE ACCURACY (Commanded vs Actual):")
+            if 'position_error' in statistics['pose_accuracy']:
+                pos_stats = statistics['pose_accuracy']['position_error']
+                print(f"Position error: {pos_stats['mean']:.3f}mm ± {pos_stats['std']:.3f}mm")
+                print(f"  Range: {pos_stats['min']:.3f}mm - {pos_stats['max']:.3f}mm")
+            if 'orientation_error' in statistics['pose_accuracy']:
+                orient_stats = statistics['pose_accuracy']['orientation_error']
+                print(f"Orientation error: {orient_stats['mean']:.3f}° ± {orient_stats['std']:.3f}°")
+                print(f"  Range: {orient_stats['min']:.3f}° - {orient_stats['max']:.3f}°")
+        
+        # Add camera temperature statistics if available
+        if 'camera_temperature' in statistics:
+            print(f"\n🌡️  CAMERA TEMPERATURE:")
+            temp_stats = statistics['camera_temperature']
+            # Print unconditionally to avoid hiding valid small values
+            rgb = temp_stats.get('rgb_temp_c', {})
+            mb = temp_stats.get('main_board_temp_c', {})
+            cpu = temp_stats.get('cpu_temp_c', {})
+            if rgb:
+                print(f"RGB sensor: {rgb.get('mean', 0.0):.1f}°C ± {rgb.get('std', 0.0):.1f}°C")
+                print(f"  Range: {rgb.get('min', 0.0):.1f}°C - {rgb.get('max', 0.0):.1f}°C")
+            if mb:
+                print(f"Main board: {mb.get('mean', 0.0):.1f}°C ± {mb.get('std', 0.0):.1f}°C")
+                print(f"  Range: {mb.get('min', 0.0):.1f}°C - {mb.get('max', 0.0):.1f}°C")
+            if cpu:
+                print(f"CPU: {cpu.get('mean', 0.0):.1f}°C ± {cpu.get('std', 0.0):.1f}°C")
+                print(f"  Range: {cpu.get('min', 0.0):.1f}°C - {cpu.get('max', 0.0):.1f}°C")
+        
+        print(f"\n⏱️  TIMING STATISTICS:")
+        print(f"Start time: {start_time.strftime('%Y-%m-%d %H:%M:%S')}")
+        print(f"End time: {end_time.strftime('%Y-%m-%d %H:%M:%S')}")
+        print(f"Total runtime: {total_runtime:.1f} seconds ({total_runtime/60:.1f} minutes)")
+        print(f"Poses tested: {poses_tested}")
+        print(f"Average time per pose: {avg_time_per_pose:.1f} seconds")
+        
         print(f"\n✅ ALL DATA SAVED TO: {data_dir}")
-        print(f"   - calibration_config.json (camera params, hand-eye, reference pose)")
+        print(f"   - calibration_config.json (camera params, hand-eye, reference pose, temperature)")
         print(f"   - pose_data.json (all arm poses, measurements, and comprehensive statistics)")
         print(f"   - pose_test_log.txt (complete log file)")
         print(f"   - comprehensive_statistics.png (comprehensive statistics plots)")
+        print(f"   - pose_accuracy_statistics.png (robot pose accuracy plots)")
+        print(f"   - pose_error_analysis.png (pose-by-pose error analysis with temperature overlay)")
         print(f"   - statistics_summary_table.png (statistics summary table)")
         if resume_from_pose == 1:
             print(f"   - image_reference.jpg + image_pose_1-{len(poses)}.jpg")
@@ -1989,6 +2424,10 @@ Examples:
   # Start new test
   python pose_test_script.py --camera-name sensing-camera --arm-name myarm \\
     --pose-tracker-name mytracker --poses poses.json
+
+  # Start new test with custom tag
+  python pose_test_script.py --camera-name sensing-camera --arm-name myarm \\
+    --pose-tracker-name mytracker --poses poses.json --tag "calibration_v2"
 
   # Resume from pose 27, continuing to save in existing directory
   python pose_test_script.py --camera-name sensing-camera --arm-name myarm \\
@@ -2082,6 +2521,12 @@ All pose objects must have: x, y, z, o_x, o_y, o_z, theta
         default=None,
         help='Directory to save/continue saving data. Use this when resuming to continue saving to the same directory. If not provided, creates new timestamped directory.'
     )
+    parser.add_argument(
+        '--tag',
+        type=str,
+        default=None,
+        help='Tag to add to directory name and plot titles (e.g., "test1", "calibration_v2")'
+    )
 
     args = parser.parse_args()
 
@@ -2116,4 +2561,5 @@ All pose objects must have: x, y, z, o_x, o_y, o_z, theta
         use_sb_detection=args.use_sb_detection,
         resume_from_pose=args.resume_from_pose,
         data_dir=args.data_dir,
+        tag=args.tag,
     ))
