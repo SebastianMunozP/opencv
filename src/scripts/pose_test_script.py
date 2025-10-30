@@ -224,32 +224,48 @@ def get_aruco_dict_constant(dict_name: str):
     return dict_map.get(dict_name, cv2.aruco.DICT_6X6_250)
 
 
-def parse_poses_from_json(json_path: str) -> list:
+def parse_poses_from_json(json_path: str) -> tuple:
     """
     Parse poses from a JSON file.
 
     Args:
-        json_path: Path to JSON file containing list of pose objects
+        json_path: Path to JSON file containing poses and optional reference_pose
 
     Returns:
-        List of dicts with pose attributes: x, y, z, o_x, o_y, o_z, theta
+        Tuple of (poses_list, reference_pose_dict)
 
-    Example JSON format:
+    Example JSON format (old):
         [
           {"x": 100, "y": 200, "z": 300, "o_x": 0, "o_y": 0, "o_z": 1, "theta": 45},
           {"x": 150, "y": 100, "z": 250, "o_x": 0, "o_y": 0, "o_z": 1, "theta": 90}
         ]
+    
+    Example JSON format (new):
+        {
+          "reference_pose": {"x": 400, "y": 0, "z": -25, "o_x": 0, "o_y": 0, "o_z": 1, "theta": 0},
+          "poses": [
+            {"x": 100, "y": 200, "z": 300, "o_x": 0, "o_y": 0, "o_z": 1, "theta": 45},
+            {"x": 150, "y": 100, "z": 250, "o_x": 0, "o_y": 0, "o_z": 1, "theta": 90}
+          ]
+        }
     """
     if json_path is None:
-        return None
+        return None, None
     if not os.path.exists(json_path):
         raise FileNotFoundError(f"Poses file not found: {json_path}")
 
     with open(json_path, 'r') as f:
-        poses = json.load(f)
+        data = json.load(f)
 
-    if not isinstance(poses, list):
-        raise ValueError("JSON file must contain a list of pose objects")
+    # Handle both old format (list) and new format (dict with reference_pose and poses)
+    if isinstance(data, list):
+        poses = data
+        reference_pose = None
+    elif isinstance(data, dict):
+        poses = data.get('poses', [])
+        reference_pose = data.get('reference_pose', None)
+    else:
+        raise ValueError("JSON file must contain a list of pose objects or a dict with 'poses' and optional 'reference_pose'")
 
     # Validate each pose has required attributes
     required_attrs = ['x', 'y', 'z', 'o_x', 'o_y', 'o_z', 'theta']
@@ -258,7 +274,13 @@ def parse_poses_from_json(json_path: str) -> list:
             if attr not in pose:
                 raise ValueError(f"Pose {i} missing required attribute '{attr}'")
 
-    return poses
+    # Validate reference pose if provided
+    if reference_pose is not None:
+        for attr in required_attrs:
+            if attr not in reference_pose:
+                raise ValueError(f"Reference pose missing required attribute '{attr}'")
+
+    return poses, reference_pose
 
 def _pose_to_matrix(pose: Pose) -> np.ndarray:
     """Convert a Viam Pose to a 4x4 homogeneous transformation matrix."""
@@ -1466,6 +1488,7 @@ async def main(
     motion_service_name: str,
     camera_name: str,
     poses: list,
+    reference_pose: dict = None,
     marker_type: str = 'chessboard',
     aruco_id: int = 0,
     aruco_size: float = 200.0,
@@ -1499,7 +1522,38 @@ async def main(
             return
 
         # Get initial poses
-        A_0_pose_world_frame_raw = await _get_current_arm_pose(motion_service, arm.name, arm)
+        if reference_pose is not None:
+            print(f"\n=== MOVING TO REFERENCE POSE ===")
+            print(f"Reference pose: x={reference_pose['x']:.1f}, y={reference_pose['y']:.1f}, z={reference_pose['z']:.1f}")
+            print(f"Orientation: o_x={reference_pose['o_x']:.3f}, o_y={reference_pose['o_y']:.3f}, o_z={reference_pose['o_z']:.3f}, theta={reference_pose['theta']:.1f}°")
+            
+            # Convert reference pose dict to Viam Pose
+            reference_pose_viam = Pose(
+                x=reference_pose['x'],
+                y=reference_pose['y'], 
+                z=reference_pose['z'],
+                o_x=reference_pose['o_x'],
+                o_y=reference_pose['o_y'],
+                o_z=reference_pose['o_z'],
+                theta=reference_pose['theta']
+            )
+            
+            # Move to reference pose
+            reference_pose_in_frame = PoseInFrame(reference_frame=DEFAULT_WORLD_FRAME, pose=reference_pose_viam)
+            await motion_service.move(component_name=arm.name, destination=reference_pose_in_frame)
+            await asyncio.sleep(2.0)  # Settle time
+            
+            print(f"✅ Moved to reference pose")
+            print(f"⏸️  PAUSING FOR EVALUATION - Press Enter to continue...")
+            input()  # Pause for user evaluation
+            
+            # Get the actual pose after movement
+            A_0_pose_world_frame_raw = await _get_current_arm_pose(motion_service, arm.name, arm)
+        else:
+            print(f"\n=== USING CURRENT ARM POSITION AS REFERENCE ===")
+            A_0_pose_world_frame_raw = await _get_current_arm_pose(motion_service, arm.name, arm)
+            print(f"Current pose: x={A_0_pose_world_frame_raw.x:.1f}, y={A_0_pose_world_frame_raw.y:.1f}, z={A_0_pose_world_frame_raw.z:.1f}")
+        
         # Invert only the rotation, keep translation unchanged
         A_0_pose_world_frame = _invert_pose_rotation_only(A_0_pose_world_frame_raw)
         T_A_0_world_frame = _pose_to_matrix(A_0_pose_world_frame)
@@ -2033,12 +2087,16 @@ All pose objects must have: x, y, z, o_x, o_y, o_z, theta
 
     # Parse poses from JSON file
     try:
-        poses = parse_poses_from_json(args.poses)
+        poses, reference_pose = parse_poses_from_json(args.poses)
         if poses is None:
             print("No poses provided, using default poses")
             poses = None
         else:
             print(f"Loaded {len(poses)} poses to test")
+            if reference_pose:
+                print(f"Reference pose found: x={reference_pose['x']:.1f}, y={reference_pose['y']:.1f}, z={reference_pose['z']:.1f}")
+            else:
+                print("No reference pose specified - will use current arm position")
     except Exception as e:
         print(f"Error parsing poses: {e}")
         exit(1)
@@ -2049,6 +2107,7 @@ All pose objects must have: x, y, z, o_x, o_y, o_z, theta
         motion_service_name="motion",
         camera_name=args.camera_name,
         poses=poses,
+        reference_pose=reference_pose,
         marker_type=args.marker_type,
         aruco_id=args.aruco_id,
         aruco_size=args.aruco_size,
