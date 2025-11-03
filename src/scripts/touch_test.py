@@ -16,10 +16,13 @@ from typing import Dict, Optional
 
 # Default values for optional args
 DEFAULT_TOUCH_PROBE_LENGTH_MM = 113
-DEFAULT_PRETOUCH_OFFSET_MM = 500  # additional offset beyond touch probe length
-DEFAULT_VELOCITY_NORMAL = 25
+DEFAULT_PRETOUCH_OFFSET_MM = 150  # additional offset beyond touch probe length
+DEFAULT_VELOCITY_NORMAL = 20
 DEFAULT_VELOCITY_SLOW = 10
 DEFAULT_WORLD_FRAME = "world"
+DEFAULT_FORCE_THRESHOLD_NEWTON = 10.0  # Force threshold in Newtons
+DEFAULT_FORCE_CHECK_STEP_MM = 0.1  # How far to move between force checks
+DEFAULT_FORCE_CHECK_DELAY_S = 0.05  # Delay between force checks
 
 
 async def connect():
@@ -100,43 +103,57 @@ async def move_to_scanning_pose(
     print("Arrived at scanning position")
 
 
+async def get_force_magnitude(arm: Arm) -> float:
+    """Get the current force magnitude on the end effector."""
+    try:
+        resp = await arm.do_command({"get_tcp_forces_tool": ""})
+        forces = resp.get("tcp_forces_tool", {})
+        fx = forces.get("Fx_N", 0.0)
+        fy = forces.get("Fy_N", 0.0)
+        fz = forces.get("Fz_N", 0.0)
+        # Calculate magnitude of force vector
+        magnitude = (fx**2 + fy**2 + fz**2) ** 0.5
+        return magnitude
+    except Exception as e:
+        print(f"Error reading force sensor: {e}")
+        return 0.0
+
+
 async def start_touching(
     motion_service: MotionClient,
     arm: Arm,
     poses: Dict[str, PoseInFrame],
     probe_collision_frame: str,
     allowed_collision_frames: list[str],
-    velocity_normal: float,
-    velocity_slow: float
+    velocity_slow: float,
+    force_threshold: float,
+    force_check_step_mm: float,
+    force_check_delay_s: float
 ) -> None:
-    # Sort poses lexicographically by name
-    sorted_poses = sorted(poses.items(), key=lambda item: item[0])
-    print(f"Sorted poses: {sorted_poses}")
-    
-    for pose_name, pose_pretouch in sorted_poses:
-        print(f"Moving to pretouch position: {pose_name}")
-        await motion_service.move(
-            component_name=arm.name,
-            destination=pose_pretouch
-        )
-        
-        await arm.do_command({"set_vel": velocity_slow})
-        
-        current_pose = copy.deepcopy(pose_pretouch)
-        
-        o_x = pose_pretouch.pose.o_x
-        o_y = pose_pretouch.pose.o_y
-        o_z = pose_pretouch.pose.o_z
-        
-        # Incremental forward movement loop (along orientation vector)
+
+    async def manual_positioning_phase(
+        current_pose: PoseInFrame,
+        o_x: float,
+        o_y: float,
+        o_z: float,
+        constraints: Constraints
+    ) -> float:
+        """Phase 1: Allow user to manually inch forward.
+
+        Returns:
+            Total distance moved in mm
+        """
         distance_mm_moved = 0
+        print(f"\nManual positioning")
+        print(f"Enter distance in mm to move forward along orientation vector.")
+        print(f"Press Enter to start force sensing mode.\n")
+
         while True:
-            response = input("Keep going? By how many mm (number or press Enter to finish)?: ")
+            response = input(f"Move forward by how many mm? (current total: {distance_mm_moved:.1f}mm, or Enter to start force sensing): ")
             if not response.strip():
-                print(f"Finished touching {pose_name}. Moved {distance_mm_moved}mm along orientation vector before stopping.")
-                print("Moving to next pose.")
+                print("Starting force sensing mode...")
                 break
-            
+
             try:
                 distance = float(response)
                 current_pose.pose.x += o_x * distance
@@ -144,35 +161,119 @@ async def start_touching(
                 current_pose.pose.z += o_z * distance
                 print(f"Moving forward {distance}mm along orientation vector")
                 print(f"  New position: x={current_pose.pose.x:.2f}, y={current_pose.pose.y:.2f}, z={current_pose.pose.z:.2f}")
-                
-                collision_spec = CollisionSpecification()
-                collision_spec.allows.extend([
-                    CollisionSpecification.AllowedFrameCollisions(
-                        frame1=probe_collision_frame,
-                        frame2=allowed_collision_frame
-                    ) for allowed_collision_frame in allowed_collision_frames
-                ])
-                constraints = Constraints(
-                    collision_specification=[collision_spec],
-                )
-                
+
                 await motion_service.move(
                     component_name=arm.name,
                     destination=current_pose,
                     constraints=constraints
                 )
                 distance_mm_moved += distance
+            except ValueError:
+                print(f"Invalid input. Please enter a number or press Enter to start force sensing.")
             except Exception as e:
-                print(f"Error: {e}")
-                print(f"Error touching {pose_name}. Moved {distance_mm_moved}mm along orientation vector before stopping.")
-                print("Moving to next pose")
-                break
+                print(f"Error moving: {e}")
 
-        await arm.do_command({"set_vel": velocity_normal})
+        return distance_mm_moved
+
+    async def force_sensing_phase(
+        current_pose: PoseInFrame,
+        o_x: float,
+        o_y: float,
+        o_z: float,
+        constraints: Constraints,
+        distance_mm_moved: float
+    ) -> float:
+        """Phase 2: Automatic force sensing while moving slowly forward.
+
+        Returns:
+            Total distance moved in mm
+        """
+        print(f"\nForce sensing")
+
+        # Get baseline force reading
+        baseline_force = await get_force_magnitude(arm)
+        print(f"Baseline force: {baseline_force:.2f} N")
+        print(f"Force threshold: {force_threshold:.2f} N")
+        print(f"Moving forward until force threshold is exceeded...\n")
+
+        try:
+            while True:
+                current_pose.pose.x += o_x * force_check_step_mm
+                current_pose.pose.y += o_y * force_check_step_mm
+                current_pose.pose.z += o_z * force_check_step_mm
+
+                await motion_service.move(
+                    component_name=arm.name,
+                    destination=current_pose,
+                    constraints=constraints
+                )
+
+                distance_mm_moved += force_check_step_mm
+
+                await asyncio.sleep(force_check_delay_s)
+
+                current_force = await get_force_magnitude(arm)
+                force_change = abs(current_force - baseline_force)
+
+                print(f"  Distance: {distance_mm_moved:.1f}mm | Force: {current_force:.2f} N | Change: {force_change:.2f} N", end='\r')
+
+                if force_change >= force_threshold:
+                    print(f"\nForce threshold exceeded! Force change: {force_change:.2f} N at {distance_mm_moved:.1f}mm")
+                    break
+        except Exception as e:
+            print(f"Error during force sensing: {e}")
+            print(f"Moved {distance_mm_moved:.1f}mm along orientation vector before error.")
+
+        return distance_mm_moved
+
+    # Sort poses lexicographically by name
+    sorted_poses = sorted(poses.items(), key=lambda item: item[0])
+    print(f"Sorted poses: {sorted_poses}")
+
+    for pose_name, pose_pretouch in sorted_poses:
+        print(f"Moving to pretouch position: {pose_name}")
+        await motion_service.move(
+            component_name=arm.name,
+            destination=pose_pretouch
+        )
+
+        await arm.do_command({"set_vel": velocity_slow})
+
+        current_pose = copy.deepcopy(pose_pretouch)
+
+        o_x = pose_pretouch.pose.o_x
+        o_y = pose_pretouch.pose.o_y
+        o_z = pose_pretouch.pose.o_z
+
+        # Collision spec setup for constrained movement
+        collision_spec = CollisionSpecification()
+        collision_spec.allows.extend([
+            CollisionSpecification.AllowedFrameCollisions(
+                frame1=probe_collision_frame,
+                frame2=allowed_collision_frame
+            ) for allowed_collision_frame in allowed_collision_frames
+        ])
+        constraints = Constraints(
+            collision_specification=[collision_spec],
+        )
+
+        # Phase 1: Manual inching forward
+        distance_mm_moved = await manual_positioning_phase(
+            current_pose, o_x, o_y, o_z, constraints
+        )
+
+        # Phase 2: Automatic force sensing
+        distance_mm_moved = await force_sensing_phase(
+            current_pose, o_x, o_y, o_z, constraints, distance_mm_moved
+        )
+
+        input("Press Enter when ready to move back to pretouch position...")
         await motion_service.move(
             component_name=arm.name,
             destination=pose_pretouch,
         )
+        input("Press Enter when ready to move to the next body's pretouch pose...")
+
         await asyncio.sleep(1)
 
 async def main(
@@ -187,7 +288,10 @@ async def main(
     velocity_normal: float = DEFAULT_VELOCITY_NORMAL,
     velocity_slow: float = DEFAULT_VELOCITY_SLOW,
     world_frame: str = DEFAULT_WORLD_FRAME,
-    scanning_pose: Optional[list[float]] = None
+    scanning_pose: Optional[list[float]] = None,
+    force_threshold: float = DEFAULT_FORCE_THRESHOLD_NEWTON,
+    force_check_step_mm: float = DEFAULT_FORCE_CHECK_STEP_MM,
+    force_check_delay_s: float = DEFAULT_FORCE_CHECK_DELAY_S
 ):
     machine: Optional[RobotClient] = None
     pt: Optional[PoseTracker] = None
@@ -223,7 +327,17 @@ async def main(
 
         # Start touches
         input("Press Enter to start touches...")
-        await start_touching(motion_service, arm, poses, probe_collision_frame, allowed_collision_frames, velocity_normal, velocity_slow)
+        await start_touching(
+            motion_service,
+            arm,
+            poses,
+            probe_collision_frame,
+            allowed_collision_frames,
+            velocity_slow,
+            force_threshold,
+            force_check_step_mm,
+            force_check_delay_s
+        )
     except Exception as e:
         print("Caught exception in script main: ")
         raise e
@@ -315,6 +429,24 @@ if __name__ == '__main__':
         metavar=('X', 'Y', 'Z', 'O_X', 'O_Y', 'O_Z', 'THETA'),
         help='Scanning pose in world frame: x y z o_x o_y o_z theta (7 values). If not provided, assumes bodies are already visible from the current pose.'
     )
+    parser.add_argument(
+        '--force-threshold',
+        type=float,
+        default=DEFAULT_FORCE_THRESHOLD_NEWTON,
+        help=f'Force threshold in Newtons for contact detection (default: {DEFAULT_FORCE_THRESHOLD_NEWTON})'
+    )
+    parser.add_argument(
+        '--force-check-step-mm',
+        type=float,
+        default=DEFAULT_FORCE_CHECK_STEP_MM,
+        help=f'Distance to move between force checks in mm (default: {DEFAULT_FORCE_CHECK_STEP_MM})'
+    )
+    parser.add_argument(
+        '--force-check-delay-s',
+        type=float,
+        default=DEFAULT_FORCE_CHECK_DELAY_S,
+        help=f'Delay between force checks in seconds (default: {DEFAULT_FORCE_CHECK_DELAY_S})'
+    )
 
     args = parser.parse_args()
     asyncio.run(main(
@@ -329,5 +461,8 @@ if __name__ == '__main__':
         velocity_normal=args.velocity_normal,
         velocity_slow=args.velocity_slow,
         world_frame=args.world_frame,
-        scanning_pose=args.scanning_pose
+        scanning_pose=args.scanning_pose,
+        force_threshold=args.force_threshold,
+        force_check_step_mm=args.force_check_step_mm,
+        force_check_delay_s=args.force_check_delay_s
     ))
