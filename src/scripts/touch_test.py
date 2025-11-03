@@ -20,7 +20,7 @@ DEFAULT_PRETOUCH_OFFSET_MM = 150  # additional offset beyond touch probe length
 DEFAULT_VELOCITY_NORMAL = 20
 DEFAULT_VELOCITY_SLOW = 10
 DEFAULT_WORLD_FRAME = "world"
-DEFAULT_FORCE_THRESHOLD = 10.0  # Force threshold in Newtons
+DEFAULT_FORCE_THRESHOLD_NEWTON = 10.0  # Force threshold in Newtons
 DEFAULT_FORCE_CHECK_STEP_MM = 0.1  # How far to move between force checks
 DEFAULT_FORCE_CHECK_DELAY_S = 0.05  # Delay between force checks
 
@@ -289,7 +289,7 @@ async def main(
     velocity_slow: float = DEFAULT_VELOCITY_SLOW,
     world_frame: str = DEFAULT_WORLD_FRAME,
     scanning_pose: Optional[list[float]] = None,
-    force_threshold: float = DEFAULT_FORCE_THRESHOLD,
+    force_threshold: float = DEFAULT_FORCE_THRESHOLD_NEWTON,
     force_check_step_mm: float = DEFAULT_FORCE_CHECK_STEP_MM,
     force_check_delay_s: float = DEFAULT_FORCE_CHECK_DELAY_S
 ):
@@ -432,8 +432,8 @@ if __name__ == '__main__':
     parser.add_argument(
         '--force-threshold',
         type=float,
-        default=DEFAULT_FORCE_THRESHOLD,
-        help=f'Force threshold in Newtons for contact detection (default: {DEFAULT_FORCE_THRESHOLD})'
+        default=DEFAULT_FORCE_THRESHOLD_NEWTON,
+        help=f'Force threshold in Newtons for contact detection (default: {DEFAULT_FORCE_THRESHOLD_NEWTON})'
     )
     parser.add_argument(
         '--force-check-step-mm',
