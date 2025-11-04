@@ -33,6 +33,7 @@ METHODS = [
 ARM_ATTR = "arm_name"
 BODY_NAME_ATTR = "body_name"
 USE_INTERNAL_POSE_TRACKER_ATTR = "use_internal_pose_tracker"
+CAMERA_NAME_ATTR = "camera_name"
 CALIB_ATTR = "calibration_type"
 JOINT_POSITIONS_ATTR = "joint_positions"
 POSES_ATTR = "poses"
@@ -170,8 +171,11 @@ class HandEyeCalibration(Generic, EasyResource):
         self.sleep_seconds = attrs.get(SLEEP_ATTR, DEFAULT_SLEEP_SECONDS)
         self.body_names = [attrs.get(BODY_NAME_ATTR)] if attrs.get(BODY_NAME_ATTR) is not None else []
         self.use_internal_pose_tracker = attrs.get(USE_INTERNAL_POSE_TRACKER_ATTR, False)
-        self.pattern_size = attrs.get(PATTERN_SIZE_ATTR, [11, 8])
-        self.square_size = attrs.get(SQUARE_SIZE_MM_ATTR, 20.0)
+        if(self.use_internal_pose_tracker):
+            camera_name = attrs.get(CAMERA_NAME_ATTR)
+            self.pattern_size = attrs.get(PATTERN_SIZE_ATTR, [11, 8])
+            self.square_size = attrs.get(SQUARE_SIZE_MM_ATTR, 20.0)
+            self.camera = dependencies.get(Camera.get_resource_name(camera_name))
 
         return super().reconfigure(config, dependencies)
 
