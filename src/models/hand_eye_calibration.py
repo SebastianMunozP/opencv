@@ -211,7 +211,8 @@ class HandEyeCalibration(Generic, EasyResource):
         chessboard_size = self.pattern_size
         square_size = self.square_size
         image = await self.get_camera_image()
-        camera_matrix, dist_coeffs = await self.get_camera_intrinsics()
+        camera_matrix, dist_coeffs = await self.get_camera_intrinsics(self.camera)
+        pnp_method = cv2.SOLVEPNP_IPPE
         # Convert to grayscale if needed
         if len(image.shape) == 3:
             gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
