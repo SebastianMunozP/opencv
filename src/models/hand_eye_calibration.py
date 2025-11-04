@@ -34,8 +34,8 @@ ARM_ATTR = "arm_name"
 BODY_NAME_ATTR = "body_name"
 USE_INTERNAL_POSE_TRACKER_ATTR = "use_internal_pose_tracker"
 CALIB_ATTR = "calibration_type"
-CAM_ATTR = "camera_name"
 JOINT_POSITIONS_ATTR = "joint_positions"
+POSES_ATTR = "poses"
 METHOD_ATTR = "method"
 MOTION_ATTR = "motion"
 POSE_TRACKER_ATTR = "pose_tracker"
@@ -88,27 +88,26 @@ class HandEyeCalibration(Generic, EasyResource):
         """
         attrs = struct_to_dict(config.attributes)
 
-        cam = attrs.get(CAM_ATTR)
-        if cam is None:
-            raise Exception(f"Missing required {CAM_ATTR} attribute.")
-        
         arm = attrs.get(ARM_ATTR)
         if arm is None:
             raise Exception(f"Missing required {ARM_ATTR} attribute.")
-        
-        if attrs.get(JOINT_POSITIONS_ATTR) is None:
-            raise Exception(f"Missing required {JOINT_POSITIONS_ATTR} attribute.")
-        
+
+        # Either joint_positions or poses must be provided
+        joint_positions = attrs.get(JOINT_POSITIONS_ATTR)
+        poses = attrs.get(POSES_ATTR)
+        if joint_positions is None and poses is None:
+            raise Exception(f"Must provide either {JOINT_POSITIONS_ATTR} or {POSES_ATTR} attribute.")
+
         pose_tracker = attrs.get(POSE_TRACKER_ATTR)
         if pose_tracker is None:
             raise Exception(f"Missing required {POSE_TRACKER_ATTR} attribute.")
-        
+
         calib = attrs.get(CALIB_ATTR)
         if calib is None:
             raise Exception(f"Missing required {CALIB_ATTR} attribute.")
         if calib not in CALIBS:
             raise Exception(f"{calib} is not an available calibration.")
-        
+
         method = attrs.get(METHOD_ATTR)
         if method not in METHODS:
             raise Exception(f"{method} is not an available method for calibration.")
@@ -118,7 +117,12 @@ class HandEyeCalibration(Generic, EasyResource):
             if not isinstance(body_name, str):
                 raise Exception(f"'{BODY_NAME_ATTR}' must be a string, got {type(body_name)}")
 
-        return [str(arm), str(cam), str(pose_tracker)], []
+        motion = attrs.get(MOTION_ATTR)
+        optional_deps = []
+        if motion is not None:
+            optional_deps.append(str(motion))
+
+        return [str(arm), str(pose_tracker)], optional_deps
 
     def reconfigure(
         self, config: ComponentConfig, dependencies: Mapping[ResourceName, ResourceBase]
@@ -131,20 +135,37 @@ class HandEyeCalibration(Generic, EasyResource):
         """
         attrs = struct_to_dict(config.attributes)
 
-        camera: str = attrs.get(CAM_ATTR)
-        self.camera: Camera = dependencies.get(Camera.get_resource_name(camera))
-        
-        arm: Arm = attrs.get(ARM_ATTR)
+        arm = attrs.get(ARM_ATTR)
         self.arm: Arm = dependencies.get(Arm.get_resource_name(arm))
 
-        pose_tracker: PoseTracker = attrs.get(POSE_TRACKER_ATTR)
+        pose_tracker = attrs.get(POSE_TRACKER_ATTR)
         self.pose_tracker: PoseTracker = dependencies.get(PoseTracker.get_resource_name(pose_tracker))
 
-        motion: Motion = attrs.get(MOTION_ATTR)
-        self.motion: Motion = dependencies.get(Motion.get_resource_name(motion))
+        motion = attrs.get(MOTION_ATTR)
+        self.motion: Optional[Motion] = dependencies.get(Motion.get_resource_name(motion)) if motion else None
+        if self.motion is not None:
+            self.logger.debug(f"Motion service configured: {self.motion.name}")
+        else:
+            self.logger.debug("No motion service configured, using direct joint position control")
 
-        self.calib = attrs.get(CALIB_ATTR)
+
+        # Parse joint positions or poses from config
         self.joint_positions = attrs.get(JOINT_POSITIONS_ATTR, [])
+
+        poses_config = attrs.get(POSES_ATTR, [])
+        self.poses = []
+        for pose_dict in poses_config:
+            pose = Pose(
+                x=pose_dict.get("x", 0),
+                y=pose_dict.get("y", 0),
+                z=pose_dict.get("z", 0),
+                o_x=pose_dict.get("o_x", 0),
+                o_y=pose_dict.get("o_y", 0),
+                o_z=pose_dict.get("o_z", 1),
+                theta=pose_dict.get("theta", 0)
+            )
+            self.poses.append(pose)
+
         self.method = attrs.get(METHOD_ATTR, DEFAULT_METHOD)
         self.sleep_seconds = attrs.get(SLEEP_ATTR, DEFAULT_SLEEP_SECONDS)
         self.body_names = [attrs.get(BODY_NAME_ATTR)] if attrs.get(BODY_NAME_ATTR) is not None else []
@@ -190,7 +211,7 @@ class HandEyeCalibration(Generic, EasyResource):
         chessboard_size = self.pattern_size
         square_size = self.square_size
         image = await self.get_camera_image()
-        camera_matrix, dist_coeffs = await self.get_camera_intrinsics(self.camera)
+        camera_matrix, dist_coeffs = await self.get_camera_intrinsics()
         pnp_method = cv2.SOLVEPNP_IPPE
         # Convert to grayscale if needed
         if len(image.shape) == 3:
@@ -206,69 +227,72 @@ class HandEyeCalibration(Generic, EasyResource):
         # Find chessboard corners using selected method
         corners = None
         ret, corners = cv2.findChessboardCorners(gray, chessboard_size, None)
-        if ret:
-            # Filter outliers before solvePnP with IMPROVED thresholds
-            print(f"Original corners: {len(corners)} points")
+        if not ret:
+            print("Failed to find chessboard corners")
+            return None, None
             
-            # Method 1: Use iterative outlier filtering with tighter threshold
-            try:
-                # First, try to get an initial pose estimate with all points
-                success_init, rvec_init, tvec_init = cv2.solvePnP(objp, corners, camera_matrix, dist_coeffs, flags=pnp_method)
+        # Filter outliers before solvePnP with IMPROVED thresholds
+        print(f"Original corners: {len(corners)} points")
+        
+        # Method 1: Use iterative outlier filtering with tighter threshold
+        try:
+            # First, try to get an initial pose estimate with all points
+            success_init, rvec_init, tvec_init = cv2.solvePnP(objp, corners, camera_matrix, dist_coeffs, flags=pnp_method)
+            
+            if success_init:
+                # Project points back and calculate errors
+                projected_points, _ = cv2.projectPoints(objp, rvec_init, tvec_init, camera_matrix, dist_coeffs)
+                projected_points = projected_points.reshape(-1, 2)
+                corners_2d = corners.reshape(-1, 2)
                 
-                if success_init:
-                    # Project points back and calculate errors
-                    projected_points, _ = cv2.projectPoints(objp, rvec_init, tvec_init, camera_matrix, dist_coeffs)
-                    projected_points = projected_points.reshape(-1, 2)
-                    corners_2d = corners.reshape(-1, 2)
+                # Calculate reprojection errors
+                errors = np.linalg.norm(corners_2d - projected_points, axis=1)
+                
+                # IMPROVED: Use statistical outlier detection
+                # Filter using median absolute deviation (more robust than std)
+                median_error = np.median(errors)
+                mad = np.median(np.abs(errors - median_error))
+                
+                # Modified z-score using MAD
+                modified_z_scores = 0.6745 * (errors - median_error) / (mad + 1e-10)
+                
+                # Keep points with modified z-score < 3.5 (equivalent to ~3 sigma)
+                # OR use absolute threshold of 2 pixels (whichever is stricter)
+                threshold_statistical = median_error + 3.5 * mad
+                threshold_absolute = 2.0
+                threshold = min(threshold_statistical, threshold_absolute)
+                
+                good_indices = errors < threshold
+                
+                n_filtered = len(corners) - np.sum(good_indices)
+                if n_filtered > 0:
+                    print(f"Filtering {n_filtered} outliers (threshold: {threshold:.2f}px)")
+                    print(f"  Error range: {np.min(errors):.3f} to {np.max(errors):.3f}px")
+                    print(f"  Median: {median_error:.3f}px, MAD: {mad:.3f}px")
+                
+                if np.sum(good_indices) >= 20:  # Need at least 20 points for reliable PnP
+                    filtered_corners = corners[good_indices]
+                    filtered_objp = objp[good_indices]
+                    print(f"Filtered corners: {len(filtered_corners)}/{len(corners)} points (error < {threshold:.2f}px)")
                     
-                    # Calculate reprojection errors
-                    errors = np.linalg.norm(corners_2d - projected_points, axis=1)
-                    
-                    # IMPROVED: Use statistical outlier detection
-                    # Filter using median absolute deviation (more robust than std)
-                    median_error = np.median(errors)
-                    mad = np.median(np.abs(errors - median_error))
-                    
-                    # Modified z-score using MAD
-                    modified_z_scores = 0.6745 * (errors - median_error) / (mad + 1e-10)
-                    
-                    # Keep points with modified z-score < 3.5 (equivalent to ~3 sigma)
-                    # OR use absolute threshold of 2 pixels (whichever is stricter)
-                    threshold_statistical = median_error + 3.5 * mad
-                    threshold_absolute = 2.0
-                    threshold = min(threshold_statistical, threshold_absolute)
-                    
-                    good_indices = errors < threshold
-                    
-                    n_filtered = len(corners) - np.sum(good_indices)
-                    if n_filtered > 0:
-                        print(f"Filtering {n_filtered} outliers (threshold: {threshold:.2f}px)")
-                        print(f"  Error range: {np.min(errors):.3f} to {np.max(errors):.3f}px")
-                        print(f"  Median: {median_error:.3f}px, MAD: {mad:.3f}px")
-                    
-                    if np.sum(good_indices) >= 20:  # Need at least 20 points for reliable PnP
-                        filtered_corners = corners[good_indices]
-                        filtered_objp = objp[good_indices]
-                        print(f"Filtered corners: {len(filtered_corners)}/{len(corners)} points (error < {threshold:.2f}px)")
-                        
-                        # Use filtered points for final solvePnP
-                        success, rvec, tvec = cv2.solvePnP(filtered_objp, filtered_corners, camera_matrix, dist_coeffs, flags=pnp_method)
-                        corners = filtered_corners  # Update corners for validation
-                        objp = filtered_objp  # Update objp for validation
-                    else:
-                        print(f"Not enough good points ({np.sum(good_indices)}), using all points")
-                        success, rvec, tvec = cv2.solvePnP(objp, corners, camera_matrix, dist_coeffs, flags=pnp_method)
+                    # Use filtered points for final solvePnP
+                    success, rvec, tvec = cv2.solvePnP(filtered_objp, filtered_corners, camera_matrix, dist_coeffs, flags=pnp_method)
+                    corners = filtered_corners  # Update corners for validation
+                    objp = filtered_objp  # Update objp for validation
                 else:
-                    print("Initial solvePnP failed, using all points")
+                    print(f"Not enough good points ({np.sum(good_indices)}), using all points")
                     success, rvec, tvec = cv2.solvePnP(objp, corners, camera_matrix, dist_coeffs, flags=pnp_method)
-                    
-            except Exception as e:
-                print(f"Outlier filtering failed: {e}, using all points")
+            else:
+                print("Initial solvePnP failed, using all points")
                 success, rvec, tvec = cv2.solvePnP(objp, corners, camera_matrix, dist_coeffs, flags=pnp_method)
+                
+        except Exception as e:
+            print(f"Outlier filtering failed: {e}, using all points")
+            success, rvec, tvec = cv2.solvePnP(objp, corners, camera_matrix, dist_coeffs, flags=pnp_method)
 
-            if not success:
-                print("Failed to solve PnP")
-                return False, None, None, None, None
+        if not success:
+            print("Failed to solve PnP")
+            return None, None
 
         # Enhanced refinement with VVS
         rvec, tvec = cv2.solvePnPRefineVVS(objp, corners, camera_matrix, dist_coeffs, rvec, tvec)
@@ -326,6 +350,108 @@ class HandEyeCalibration(Generic, EasyResource):
 
         return R_base2gripper, t_base2gripper, R_cam2target, t_cam2target
 
+    async def _move_arm_to_position(self, position_data, position_index, total_positions):
+        """Move arm to specified position using joint control, direct pose control, or motion planning.
+
+        Args:
+            position_data: Either a list of joint positions (radians) or a Pose object
+            position_index: Index of the current position
+            total_positions: Total number of positions
+        """
+        self.logger.debug(f"Moving to position {position_index+1}/{total_positions}")
+
+        is_pose = isinstance(position_data, Pose)
+
+        if self.motion is not None and is_pose:
+            # Motion planning approach with pose
+            pif = PoseInFrame(reference_frame="world", pose=position_data)
+
+            success = await self.motion.move(
+                component_name=self.arm.name,
+                destination=pif,
+            )
+            if not success:
+                raise Exception(f"Could not move to pose {position_index+1}/{total_positions}")
+            self.logger.debug(f"Moved arm to pose using motion planning")
+        elif is_pose:
+            # Direct pose control using arm.move_to_position
+            try:
+                await self.arm.move_to_position(pose=position_data)
+            except Exception as e:
+                self.logger.error(f"Could not move arm to pose. If the arm does not implement move_to_position, use motion service instead. Error: {e}")
+                raise e
+
+            while await self.arm.is_moving():
+                await asyncio.sleep(0.05)
+            self.logger.debug(f"Moved arm to pose: {position_data}")
+        else:
+            # Direct joint position control
+            joints_deg = [np.degrees(joint) for joint in position_data]
+            jp = JointPositions(values=joints_deg)
+            await self.arm.move_to_joint_positions(jp)
+            while await self.arm.is_moving():
+                await asyncio.sleep(0.05)
+            self.logger.debug(f"Moved arm to joint position: {jp}")
+
+    async def _collect_calibration_data(self):
+        """Collect calibration data for all joint positions or poses."""
+        R_gripper2base_list = []
+        t_gripper2base_list = []
+        R_target2cam_list = []
+        t_target2cam_list = []
+
+        # Use poses if available (motion planning mode), otherwise use joint positions
+        positions = self.poses if self.poses else self.joint_positions
+        total_positions = len(positions)
+
+        for i, position in enumerate(positions):
+            try:
+                await self._move_arm_to_position(position, i, total_positions)
+                await asyncio.sleep(self.sleep_seconds)
+
+                if self.use_internal_pose_tracker:
+                    # Get arm pose separately
+                    arm_pose = await self.arm.get_end_position()
+                    R_base2gripper = call_go_ov2mat(
+                        arm_pose.o_x,
+                        arm_pose.o_y,
+                        arm_pose.o_z,
+                        arm_pose.theta
+                    )
+                    t_base2gripper = np.array([[arm_pose.x], [arm_pose.y], [arm_pose.z]], dtype=np.float64)
+                    
+                    # Get camera-to-target pose from chessboard
+                    R_cam2target, t_cam2target = await self.get_calibration_values_from_chessboard()
+                    if R_cam2target is None or t_cam2target is None:
+                        self.logger.warning(f"Could not find calibration values from chessboard for position {i+1}/{total_positions}")
+                        continue
+                else:
+                    R_base2gripper, t_base2gripper, R_cam2target, t_cam2target = await self.get_calibration_values()
+
+                # TODO: Implement eye-to-hand. This should just be changing the
+                # order/in-frame values
+
+                # OpenCV calibrateHandEye expects transposed rotations but original translation vectors
+                # Only invert rotation matrices, keep translation vectors as-is
+                R_gripper2base = R_base2gripper.T
+                t_gripper2base = t_base2gripper
+                R_target2cam = R_cam2target.T
+                t_target2cam = t_cam2target
+
+                R_gripper2base_list.append(R_gripper2base)
+                t_gripper2base_list.append(t_gripper2base)
+                R_target2cam_list.append(R_target2cam)
+                t_target2cam_list.append(t_target2cam)
+
+                self.logger.info(f"successfully collected calibration data for position {i+1}/{total_positions}")
+
+            except Exception as e:
+                error_msg = f"Could not find calibration values for position {i+1}/{total_positions}: {e}"
+                self.logger.error(error_msg)
+                raise Exception(error_msg)
+        
+        return R_gripper2base_list, t_gripper2base_list, R_target2cam_list, t_target2cam_list
+
     async def do_command(
         self,
         command: Mapping[str, ValueTypes],
@@ -337,71 +463,7 @@ class HandEyeCalibration(Generic, EasyResource):
         for key, value in command.items():
             match key:
                 case "run_calibration":
-                    # Initialize data collection lists
-                    R_gripper2base_list = []
-                    t_gripper2base_list = []
-                    R_target2cam_list = []
-                    t_target2cam_list = []
-
-                    # TODO: Use motion planning if available
-                    if self.motion is None:
-                        for i, joints in enumerate(self.joint_positions):
-                            R_base2gripper = None
-                            t_base2gripper = None
-                            R_cam2target = None
-                            t_cam2target = None
-
-                            self.logger.debug(f"Moving to pose {i+1}/{len(self.joint_positions)}")
-
-                            # Python SDK requires degrees for joint positions
-                            joints_deg = [np.degrees(joint) for joint in joints]
-                            jp = JointPositions(values=joints_deg)
-                            await self.arm.move_to_joint_positions(jp)
-                            while await self.arm.is_moving():
-                                await asyncio.sleep(0.05)
-                            self.logger.debug(f"Moved arm to position: {jp}")
-
-                            # Sleep for the configured amount of time to allow the arm and camera to settle
-                            await asyncio.sleep(self.sleep_seconds)
-
-                            R_base2gripper = None
-                            t_base2gripper = None
-                            R_cam2target = None
-                            t_cam2target = None
-
-                            if(self.use_internal_pose_tracker):
-                                R_base2gripper, t_base2gripper, R_cam2target, t_cam2target = await self.get_calibration_values_from_chessboard()
-                            else:
-                                R_base2gripper, t_base2gripper, R_cam2target, t_cam2target = await self.get_calibration_values()
-                            if R_base2gripper is None or t_base2gripper is None or R_cam2target is None or t_cam2target is None:
-                                self.logger.warning(f"Could not find calibration values for pose {i+1}/{len(self.joint_positions)}")
-                                continue
-
-                            self.logger.info(f"successfully collected calibration data for pose {i+1}/{len(self.joint_positions)}")
-
-                            # TODO: Implement eye-to-hand. This should just be changing the
-                            # order/in-frame values
-
-                            # OpenCV calibrateHandEye expects transposed rotations but original translation vectors
-                            # Only invert rotation matrices, keep translation vectors as-is
-                            R_gripper2base = R_base2gripper.T
-                            t_gripper2base = t_base2gripper
-                            R_target2cam = R_cam2target.T
-                            t_target2cam = t_cam2target
-                            
-                            R_gripper2base_list.append(R_gripper2base)
-                            t_gripper2base_list.append(t_gripper2base)
-                            R_target2cam_list.append(R_target2cam)
-                            t_target2cam_list.append(t_target2cam)
-                    else:
-                        # TODO: Implement motion service code here
-                        try:
-                            success = await self.motion.move(
-                                component_name=self.arm.name,
-                                destination=None,
-                            )
-                        except Exception as e:
-                            raise Exception(e)
+                    R_gripper2base_list, t_gripper2base_list, R_target2cam_list, t_target2cam_list = await self._collect_calibration_data()
 
                     # Check if we have enough measurements
                     if len(R_gripper2base_list) < 3:
@@ -461,66 +523,56 @@ class HandEyeCalibration(Generic, EasyResource):
                     }
                 case "move_arm": 
                     raise NotImplementedError("This is not yet implemented")
-                case "check_tags":
+                case "check_bodies":
                     tracked_poses: Dict[str, PoseInFrame] = await self.pose_tracker.get_poses(body_names=self.body_names)
                     if tracked_poses is None or len(tracked_poses) == 0:
-                        resp["check_tags"] = "No tracked bodies found in image"
+                        resp["check_bodies"] = "No tracked bodies found in image"
                         break
 
-                    resp["check_tags"] = f"Number of tracked bodies seen: {len(tracked_poses)}"
-                case "save_calibration_position":
-                    index = int(value)
-
-                    arm_joint_pos = await self.arm.get_joint_positions()
-                    if arm_joint_pos is None:
-                        resp["save_calibration_position"] = "Could not get joint positions of arm"
+                    resp["check_bodies"] = f"Number of tracked bodies seen: {len(tracked_poses)}"
+                case "get_current_arm_pose":
+                    arm_pose = await self.arm.get_end_position()
+                    if arm_pose is None:
+                        resp["get_current_arm_pose"] = "Could not get end position of arm"
                         break
 
-                    if index < 0:
-                        self.joint_positions.append(arm_joint_pos)
-                        resp["save_calibration_position"] = f"joint position {len(self.joint_positions) - 1} added to config"
-                    elif index >= len(self.joint_positions):
-                        resp["save_calibration_position"] = f"index {value} is out of range, only {len(self.joint_positions)} are set."
-                    else:
-                        self.joint_positions[index] = arm_joint_pos
-                        resp["save_calibration_position"] = f"joint position {index} updated in config"
-
-                    # TODO: Update config with updated joint positions array
+                    resp["get_current_arm_pose"] = {
+                        "x": arm_pose.x,
+                        "y": arm_pose.y,
+                        "z": arm_pose.z,
+                        "o_x": arm_pose.o_x,
+                        "o_y": arm_pose.o_y,
+                        "o_z": arm_pose.o_z,
+                        "theta": arm_pose.theta
+                    }
                 case "move_arm_to_position":
+                    # Use poses if available (motion planning mode), otherwise use joint positions
+                    if self.motion is not None and self.poses:
+                        positions = self.poses
+                        position_type = "pose"
+                    else:
+                        positions = self.joint_positions
+                        position_type = "joint position"
+
                     index = int(value)
 
-                    if index >= len(self.joint_positions):
-                        resp["move_arm_to_position"] = f"position {index} invalid since there are only {len(self.joint_positions)} positions"
+                    if index >= len(positions):
+                        resp["move_arm_to_position"] = f"{position_type} {index} invalid since there are only {len(positions)} {position_type}s"
+                        break
 
-                    joint_pos = self.joint_positions[index]
+                    position = positions[index]
 
-                    if self.motion is None:
-                        jp = JointPositions(joint_pos)
-                        arm_joint_pos = self.arm.move_to_joint_positions(jp)
+                    await self._move_arm_to_position(position, index, len(positions))
 
-                        # Sleep to allow time for the camera and arm to settle
-                        asyncio.sleep(self.sleep_seconds)
+                    # Sleep to allow time for the camera and arm to settle
+                    await asyncio.sleep(self.sleep_seconds)
 
-                    # TODO: Implement using motion service 
-
-                    tracked_poses: dict = await self.pose_tracker.get_poses(body_names=self.body_names)
-                    if tracked_poses is None:
+                    tracked_poses: Optional[Dict[str, PoseInFrame]] = await self.pose_tracker.get_poses(body_names=self.body_names)
+                    if tracked_poses is None or len(tracked_poses) == 0:
                         resp["move_arm_to_position"] = "No tracked bodies found in image"
                         break
 
                     resp["move_arm_to_position"] = len(tracked_poses)
-                case "delete_calibration_position":
-                    index = int(value)
-                    if index >= len(self.joint_positions):
-                        resp["delete_calibration_position"] = f"index {index} is out of range of list with length {len(self.joint_positions)}"
-
-                    del self.joint_positions[index]
-
-                    resp["delete_calibration_position"] = f"position {index} deleted"
-                case "clear_calibration_positions":
-                    self.joint_positions = []
-
-                    resp["clear_calibration_positions"] = "all calibration positions removed"
                 case "auto_calibrate":
                     raise NotImplementedError("This is not yet implemented")
                 case _:
