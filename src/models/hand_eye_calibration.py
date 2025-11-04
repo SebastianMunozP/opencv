@@ -185,7 +185,11 @@ class HandEyeCalibration(Generic, EasyResource):
             camera_name = attrs.get(CAMERA_NAME_ATTR)
             if camera_name is None:
                 raise Exception(f"When {USE_INTERNAL_POSE_TRACKER_ATTR} is True, {CAMERA_NAME_ATTR} is required.")
-            self.pattern_size = attrs.get(PATTERN_SIZE_ATTR, [11, 8])
+            pattern_size_raw = attrs.get(PATTERN_SIZE_ATTR, [11, 8])
+            # Ensure pattern_size is a list of integers (config might have floats)
+            if not isinstance(pattern_size_raw, (list, tuple)) or len(pattern_size_raw) != 2:
+                raise Exception(f"{PATTERN_SIZE_ATTR} must be a list or tuple of 2 integers (rows, cols), got: {pattern_size_raw}")
+            self.pattern_size = [int(pattern_size_raw[0]), int(pattern_size_raw[1])]
             self.square_size = attrs.get(SQUARE_SIZE_MM_ATTR, 20.0)
             self.camera = dependencies.get(Camera.get_resource_name(camera_name))
             if self.camera is None:
@@ -236,7 +240,8 @@ class HandEyeCalibration(Generic, EasyResource):
         return K, dist
 
     async def get_calibration_values_from_chessboard(self):
-        chessboard_size = self.pattern_size
+        # Ensure pattern_size is integers (it should be, but double-check)
+        chessboard_size = tuple(int(x) for x in self.pattern_size)
         square_size = self.square_size
         image = await self.get_camera_image()
         camera_matrix, dist_coeffs = await self.get_camera_intrinsics(self.camera)
@@ -248,6 +253,7 @@ class HandEyeCalibration(Generic, EasyResource):
             gray = image
     
         # Prepare 3D object points (chessboard corners in world coordinates)
+        # chessboard_size is (rows, cols) - inner corners
         objp = np.zeros((chessboard_size[0] * chessboard_size[1], 3), np.float32)
         objp[:,:2] = np.mgrid[0:chessboard_size[0], 0:chessboard_size[1]].T.reshape(-1,2)
         objp *= square_size
@@ -456,9 +462,35 @@ class HandEyeCalibration(Generic, EasyResource):
                 self.logger.info(f"successfully collected calibration data for position {i+1}/{total_positions}")
 
             except Exception as e:
-                error_msg = f"Could not find calibration values for position {i+1}/{total_positions}: {e}"
-                self.logger.error(error_msg)
-                raise Exception(error_msg)
+                error_msg = str(e)
+                # Check if this is a timeout or cancellation error (recoverable)
+                # Handle tuple errors like (Status.CANCELLED, 'cbirrt timeout context canceled', None)
+                error_str = str(e)
+                is_timeout = (
+                    "timeout" in error_str.lower() 
+                    or "cancelled" in error_str.lower() 
+                    or "CANCELLED" in error_str
+                    or (isinstance(e, tuple) and len(e) > 0 and "CANCELLED" in str(e[0]))
+                )
+                
+                if is_timeout:
+                    self.logger.warning(f"Skipping position {i+1}/{total_positions} due to timeout/cancellation: {error_msg}")
+                    self.logger.warning(f"Continuing with remaining positions. Progress: {len(R_gripper2base_list)}/{total_positions} collected so far")
+                    continue
+                else:
+                    # For other errors, log and raise
+                    error_msg_full = f"Could not find calibration values for position {i+1}/{total_positions}: {error_msg}"
+                    self.logger.error(error_msg_full)
+                    raise Exception(error_msg_full)
+        
+        # Check if we have enough measurements after skipping any positions
+        if len(R_gripper2base_list) < 3:
+            raise Exception(
+                f"Not enough valid measurements collected after processing {total_positions} positions. "
+                f"Got {len(R_gripper2base_list)}, need at least 3. "
+                f"Some positions may have been skipped due to timeouts or errors. "
+                f"Consider adjusting motion planning parameters or checking pose reachability."
+            )
         
         return R_gripper2base_list, t_gripper2base_list, R_target2cam_list, t_target2cam_list
 
@@ -475,9 +507,7 @@ class HandEyeCalibration(Generic, EasyResource):
                 case "run_calibration":
                     R_gripper2base_list, t_gripper2base_list, R_target2cam_list, t_target2cam_list = await self._collect_calibration_data()
 
-                    # Check if we have enough measurements
-                    if len(R_gripper2base_list) < 3:
-                        raise Exception(f"not enough valid measurements collected. Got {len(R_gripper2base_list)}, need at least 3. Make sure the pose tracker can see exactly one target in each calibration position.")
+                    # Note: Minimum measurements check is done in _collect_calibration_data()
 
                     self.logger.info(f"collected {len(R_gripper2base_list)} measurements, running calibration...")
 
