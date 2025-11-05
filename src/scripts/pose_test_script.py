@@ -8,6 +8,7 @@ import cv2
 import json
 import logging
 import sys
+import shlex
 import matplotlib.pyplot as plt
 from datetime import datetime
 from dotenv import load_dotenv
@@ -24,7 +25,6 @@ from viam.rpc.dial import DialOptions
 from viam.app.viam_client import ViamClient
 from typing import Optional
 
-import sys
 sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
 
 try:
@@ -45,7 +45,7 @@ DEFAULT_SETTLE_TIME = 5.0
 
 import cv2  # Make sure cv2 is imported
 
-def setup_logging(data_dir: str):
+def setup_logging(data_dir: str, command: str = None):
     """Setup logging to both console and file"""
     # Create log file path
     log_file = os.path.join(data_dir, "pose_test_log.txt")
@@ -59,6 +59,20 @@ def setup_logging(data_dir: str):
             logging.StreamHandler(sys.stdout)
         ]
     )
+    
+    # Log the command that was executed
+    if command:
+        # Write directly to log file to ensure it's captured
+        with open(log_file, 'a') as f:
+            f.write(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - {'='*80}\n")
+            f.write(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - COMMAND EXECUTED:\n")
+            f.write(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - {command}\n")
+            f.write(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - {'='*80}\n")
+        # Also print to console
+        print("=" * 80)
+        print("COMMAND EXECUTED:")
+        print(command)
+        print("=" * 80)
     
     # Create a custom logger that captures print statements
     class PrintLogger:
@@ -2016,8 +2030,18 @@ async def main(
             else:
                 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         
+        # Reconstruct command from sys.argv for logging
+        # sys.argv[0] is the script name, sys.argv[1:] are the arguments
+        # Use shlex.join to properly quote arguments with spaces (Python 3.8+)
+        command_parts = [sys.executable] + sys.argv
+        if hasattr(shlex, 'join'):
+            command = shlex.join(command_parts)
+        else:
+            # Fallback for Python < 3.8: quote all parts and join
+            command = " ".join(shlex.quote(part) for part in command_parts)
+        
         # Setup logging
-        log_file = setup_logging(data_dir)
+        log_file = setup_logging(data_dir, command=command)
         print(f"Logging to: {log_file}")
         
         # Record start time
