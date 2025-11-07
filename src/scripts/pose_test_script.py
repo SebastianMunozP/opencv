@@ -1413,10 +1413,13 @@ def generate_comprehensive_statistics(rotation_data):
     sharpness_values = []
     corner_counts = []
     
-    # New: Collect pose accuracy errors (commanded vs actual)
-    pose_position_errors = []
-    pose_orientation_errors = []
-    pose_orientation_errors_from_motion_service = []
+    # Collect pose comparison errors from compare_poses results
+    commanded_vs_arm_translation_errors = []
+    commanded_vs_arm_rotation_errors = []
+    commanded_vs_motion_translation_errors = []
+    commanded_vs_motion_rotation_errors = []
+    arm_vs_motion_translation_errors = []
+    arm_vs_motion_rotation_errors = []
     
     # Collect temperature data
     rgb_temps = []
@@ -1446,49 +1449,33 @@ def generate_comprehensive_statistics(rotation_data):
             if 'corners_count_avg' in stats:
                 corner_counts.append(stats['corners_count_avg'])
         
-        # Pose accuracy errors (commanded vs actual)
-        pose_spec = pose_data.get('pose_spec', {})
-        A_i_pose_raw = pose_data.get('A_i_pose_raw', {})
-        A_i_pose_from_motion_service_raw = pose_data.get('A_i_pose_from_motion_service_raw', {})
-
-        if pose_spec and A_i_pose_raw and A_i_pose_from_motion_service_raw:
-            # Position error (Euclidean distance)
-            pos_error = np.sqrt(
-                (pose_spec.get('x', 0) - A_i_pose_raw.get('x', 0))**2 +
-                (pose_spec.get('y', 0) - A_i_pose_raw.get('y', 0))**2 +
-                (pose_spec.get('z', 0) - A_i_pose_raw.get('z', 0))**2
-            )
-            pose_position_errors.append(pos_error)
+        # Extract pose comparison data from compare_poses results
+        pose_comparisons = pose_data.get('pose_comparisons', {})
+        
+        if pose_comparisons:
+            # Commanded vs Arm comparison
+            cmd_vs_arm = pose_comparisons.get('commanded_vs_arm_after_move', {})
+            if cmd_vs_arm:
+                if 'translation_error_mm' in cmd_vs_arm:
+                    commanded_vs_arm_translation_errors.append(cmd_vs_arm['translation_error_mm'])
+                if 'rotation_error_deg' in cmd_vs_arm:
+                    commanded_vs_arm_rotation_errors.append(cmd_vs_arm['rotation_error_deg'])
             
-            # Orientation error (angle between orientation vectors)
-            # Convert to rotation matrices and compute angle difference
-            try:
-                R_spec = call_go_ov2mat(
-                    pose_spec.get('o_x', 0), pose_spec.get('o_y', 0), 
-                    pose_spec.get('o_z', 0), pose_spec.get('theta', 0)
-                )
-                R_actual = call_go_ov2mat(
-                    A_i_pose_raw.get('o_x', 0), A_i_pose_raw.get('o_y', 0),
-                    A_i_pose_raw.get('o_z', 0), A_i_pose_raw.get('theta', 0)
-                )
-                R_actual_from_motion_service = call_go_ov2mat(
-                    A_i_pose_from_motion_service_raw.get('o_x', 0), A_i_pose_from_motion_service_raw.get('o_y', 0),
-                    A_i_pose_from_motion_service_raw.get('o_z', 0), A_i_pose_from_motion_service_raw.get('theta', 0)
-                )
-                if R_spec is not None and R_actual is not None and R_actual_from_motion_service is not None:
-                    # Compute relative rotation matrix
-                    R_rel = R_actual @ R_spec.T
-                    # Extract rotation angle from rotation matrix
-                    trace = np.trace(R_rel)
-                    angle_error = np.arccos(np.clip((trace - 1) / 2, -1, 1))
-                    pose_orientation_errors.append(np.degrees(angle_error))
-
-                    R_rel_from_motion_service = R_actual_from_motion_service @ R_actual.T
-                    trace_from_motion_service = np.trace(R_rel_from_motion_service)
-                    angle_error_from_motion_service = np.arccos(np.clip((trace_from_motion_service - 1) / 2, -1, 1))
-                    pose_orientation_errors_from_motion_service.append(np.degrees(angle_error_from_motion_service))
-            except:
-                pass  # Skip if orientation conversion fails
+            # Commanded vs Motion Service comparison
+            cmd_vs_motion = pose_comparisons.get('commanded_vs_motion_service', {})
+            if cmd_vs_motion:
+                if 'translation_error_mm' in cmd_vs_motion:
+                    commanded_vs_motion_translation_errors.append(cmd_vs_motion['translation_error_mm'])
+                if 'rotation_error_deg' in cmd_vs_motion:
+                    commanded_vs_motion_rotation_errors.append(cmd_vs_motion['rotation_error_deg'])
+            
+            # Arm vs Motion Service comparison
+            arm_vs_motion = pose_comparisons.get('arm_after_move_vs_motion_service', {})
+            if arm_vs_motion:
+                if 'translation_error_mm' in arm_vs_motion:
+                    arm_vs_motion_translation_errors.append(arm_vs_motion['translation_error_mm'])
+                if 'rotation_error_deg' in arm_vs_motion:
+                    arm_vs_motion_rotation_errors.append(arm_vs_motion['rotation_error_deg'])
         
         # Collect temperature data from measurements
         if 'measurements' in pose_data:
@@ -1537,9 +1524,19 @@ def generate_comprehensive_statistics(rotation_data):
             'sharpness': calculate_stats(sharpness_values),
             'corners': calculate_stats(corner_counts)
         },
-        'pose_accuracy': {
-            'position_error': calculate_stats(pose_position_errors),
-            'orientation_error': calculate_stats(pose_orientation_errors)
+        'pose_comparisons': {
+            'commanded_vs_arm': {
+                'translation_error_mm': calculate_stats(commanded_vs_arm_translation_errors),
+                'rotation_error_deg': calculate_stats(commanded_vs_arm_rotation_errors)
+            },
+            'commanded_vs_motion_service': {
+                'translation_error_mm': calculate_stats(commanded_vs_motion_translation_errors),
+                'rotation_error_deg': calculate_stats(commanded_vs_motion_rotation_errors)
+            },
+            'arm_vs_motion_service': {
+                'translation_error_mm': calculate_stats(arm_vs_motion_translation_errors),
+                'rotation_error_deg': calculate_stats(arm_vs_motion_rotation_errors)
+            }
         },
         'camera_temperature': {
             'rgb_temp_c': calculate_stats(rgb_temps),
@@ -1575,47 +1572,44 @@ def create_comprehensive_statistics_plot(rotation_data, data_dir, tag=None):
     all_corner_counts = []
     pose_indices = []
     
-    # New: Collect pose accuracy data
-    all_pose_position_errors = []
-    all_pose_orientation_errors = []
+    # Collect pose comparison data from compare_poses results
+    all_cmd_vs_arm_translation = []
+    all_cmd_vs_arm_rotation = []
+    all_cmd_vs_motion_translation = []
+    all_cmd_vs_motion_rotation = []
+    all_arm_vs_motion_translation = []
+    all_arm_vs_motion_rotation = []
     
     for i, pose_data in enumerate(rotation_data):
         if 'measurements' in pose_data:
             pose_indices.append(pose_data.get('pose_index', i))
             
-            # Collect pose accuracy data (once per pose, not per measurement)
-            pose_spec = pose_data.get('pose_spec', {})
-            A_i_pose_raw = pose_data.get('A_i_pose_raw', {})
-            
-            if pose_spec and A_i_pose_raw:
-                # Position error (Euclidean distance)
-                pos_error = np.sqrt(
-                    (pose_spec.get('x', 0) - A_i_pose_raw.get('x', 0))**2 +
-                    (pose_spec.get('y', 0) - A_i_pose_raw.get('y', 0))**2 +
-                    (pose_spec.get('z', 0) - A_i_pose_raw.get('z', 0))**2
-                )
-                all_pose_position_errors.append(pos_error)
+            # Extract pose comparison data
+            pose_comparisons = pose_data.get('pose_comparisons', {})
+            if pose_comparisons:
+                # Commanded vs Arm
+                cmd_vs_arm = pose_comparisons.get('commanded_vs_arm_after_move', {})
+                if cmd_vs_arm:
+                    if 'translation_error_mm' in cmd_vs_arm:
+                        all_cmd_vs_arm_translation.append(cmd_vs_arm['translation_error_mm'])
+                    if 'rotation_error_deg' in cmd_vs_arm:
+                        all_cmd_vs_arm_rotation.append(cmd_vs_arm['rotation_error_deg'])
                 
-                # Orientation error (angle between orientation vectors)
-                try:
-                    R_spec = call_go_ov2mat(
-                        pose_spec.get('o_x', 0), pose_spec.get('o_y', 0), 
-                        pose_spec.get('o_z', 0), pose_spec.get('theta', 0)
-                    )
-                    R_actual = call_go_ov2mat(
-                        A_i_pose_raw.get('o_x', 0), A_i_pose_raw.get('o_y', 0),
-                        A_i_pose_raw.get('o_z', 0), A_i_pose_raw.get('theta', 0)
-                    )
-                    
-                    if R_spec is not None and R_actual is not None:
-                        # Compute relative rotation matrix
-                        R_rel = R_actual @ R_spec.T
-                        # Extract rotation angle from rotation matrix
-                        trace = np.trace(R_rel)
-                        angle_error = np.arccos(np.clip((trace - 1) / 2, -1, 1))
-                        all_pose_orientation_errors.append(np.degrees(angle_error))
-                except:
-                    pass  # Skip if orientation conversion fails
+                # Commanded vs Motion Service
+                cmd_vs_motion = pose_comparisons.get('commanded_vs_motion_service', {})
+                if cmd_vs_motion:
+                    if 'translation_error_mm' in cmd_vs_motion:
+                        all_cmd_vs_motion_translation.append(cmd_vs_motion['translation_error_mm'])
+                    if 'rotation_error_deg' in cmd_vs_motion:
+                        all_cmd_vs_motion_rotation.append(cmd_vs_motion['rotation_error_deg'])
+                
+                # Arm vs Motion Service
+                arm_vs_motion = pose_comparisons.get('arm_after_move_vs_motion_service', {})
+                if arm_vs_motion:
+                    if 'translation_error_mm' in arm_vs_motion:
+                        all_arm_vs_motion_translation.append(arm_vs_motion['translation_error_mm'])
+                    if 'rotation_error_deg' in arm_vs_motion:
+                        all_arm_vs_motion_rotation.append(arm_vs_motion['rotation_error_deg'])
             
             # Collect individual measurement data
             for measurement in pose_data['measurements']:
@@ -1703,42 +1697,89 @@ def create_comprehensive_statistics_plot(rotation_data, data_dir, tag=None):
     axes[2, 1].legend()
     axes[2, 1].grid(True, alpha=0.3)
     
-    # Add pose accuracy plots if data is available
-    if all_pose_position_errors:
-        # Create a new figure for pose accuracy plots
-        fig2, axes2 = plt.subplots(1, 2, figsize=(12, 5))
-        pose_title = 'Robot Pose Accuracy (Commanded vs Actual)'
+    # Create pose comparison plots if data is available
+    if all_cmd_vs_arm_translation or all_arm_vs_motion_translation:
+        # Create a new figure for pose comparison plots
+        fig2, axes2 = plt.subplots(2, 3, figsize=(18, 10))
+        pose_title = 'Pose Comparison Statistics (Commanded vs Arm vs Motion Service)'
         if tag:
             pose_title += f' - {tag}'
         fig2.suptitle(pose_title, fontsize=14, fontweight='bold')
         
-        # Plot 7: Position Errors
-        axes2[0].hist(all_pose_position_errors, bins=20, alpha=0.7, color='darkgreen', edgecolor='black')
-        axes2[0].axvline(np.mean(all_pose_position_errors), color='red', linestyle='--', linewidth=2,
-                        label=f'Mean: {np.mean(all_pose_position_errors):.3f}mm')
-        axes2[0].set_xlabel('Position Error (mm)')
-        axes2[0].set_ylabel('Frequency')
-        axes2[0].set_title('Robot Position Accuracy')
-        axes2[0].legend()
-        axes2[0].grid(True, alpha=0.3)
+        # Row 1: Translation Errors
+        # Commanded vs Arm
+        if all_cmd_vs_arm_translation:
+            axes2[0, 0].hist(all_cmd_vs_arm_translation, bins=20, alpha=0.7, color='darkgreen', edgecolor='black')
+            axes2[0, 0].axvline(np.mean(all_cmd_vs_arm_translation), color='red', linestyle='--', linewidth=2,
+                            label=f'Mean: {np.mean(all_cmd_vs_arm_translation):.3f}mm')
+            axes2[0, 0].set_xlabel('Translation Error (mm)')
+            axes2[0, 0].set_ylabel('Frequency')
+            axes2[0, 0].set_title('Commanded vs Arm (Translation)')
+            axes2[0, 0].legend()
+            axes2[0, 0].grid(True, alpha=0.3)
         
-        # Plot 8: Orientation Errors
-        if all_pose_orientation_errors:
-            axes2[1].hist(all_pose_orientation_errors, bins=20, alpha=0.7, color='darkblue', edgecolor='black')
-            axes2[1].axvline(np.mean(all_pose_orientation_errors), color='red', linestyle='--', linewidth=2,
-                            label=f'Mean: {np.mean(all_pose_orientation_errors):.3f}°')
-            axes2[1].set_xlabel('Orientation Error (degrees)')
-            axes2[1].set_ylabel('Frequency')
-            axes2[1].set_title('Robot Orientation Accuracy')
-            axes2[1].legend()
-            axes2[1].grid(True, alpha=0.3)
+        # Commanded vs Motion Service
+        if all_cmd_vs_motion_translation:
+            axes2[0, 1].hist(all_cmd_vs_motion_translation, bins=20, alpha=0.7, color='darkblue', edgecolor='black')
+            axes2[0, 1].axvline(np.mean(all_cmd_vs_motion_translation), color='red', linestyle='--', linewidth=2,
+                            label=f'Mean: {np.mean(all_cmd_vs_motion_translation):.3f}mm')
+            axes2[0, 1].set_xlabel('Translation Error (mm)')
+            axes2[0, 1].set_ylabel('Frequency')
+            axes2[0, 1].set_title('Commanded vs Motion Service (Translation)')
+            axes2[0, 1].legend()
+            axes2[0, 1].grid(True, alpha=0.3)
+        
+        # Arm vs Motion Service
+        if all_arm_vs_motion_translation:
+            axes2[0, 2].hist(all_arm_vs_motion_translation, bins=20, alpha=0.7, color='darkorange', edgecolor='black')
+            axes2[0, 2].axvline(np.mean(all_arm_vs_motion_translation), color='red', linestyle='--', linewidth=2,
+                            label=f'Mean: {np.mean(all_arm_vs_motion_translation):.3f}mm')
+            axes2[0, 2].set_xlabel('Translation Error (mm)')
+            axes2[0, 2].set_ylabel('Frequency')
+            axes2[0, 2].set_title('Arm vs Motion Service (Translation)')
+            axes2[0, 2].legend()
+            axes2[0, 2].grid(True, alpha=0.3)
+        
+        # Row 2: Rotation Errors
+        # Commanded vs Arm
+        if all_cmd_vs_arm_rotation:
+            axes2[1, 0].hist(all_cmd_vs_arm_rotation, bins=20, alpha=0.7, color='darkgreen', edgecolor='black')
+            axes2[1, 0].axvline(np.mean(all_cmd_vs_arm_rotation), color='red', linestyle='--', linewidth=2,
+                            label=f'Mean: {np.mean(all_cmd_vs_arm_rotation):.3f}°')
+            axes2[1, 0].set_xlabel('Rotation Error (degrees)')
+            axes2[1, 0].set_ylabel('Frequency')
+            axes2[1, 0].set_title('Commanded vs Arm (Rotation)')
+            axes2[1, 0].legend()
+            axes2[1, 0].grid(True, alpha=0.3)
+        
+        # Commanded vs Motion Service
+        if all_cmd_vs_motion_rotation:
+            axes2[1, 1].hist(all_cmd_vs_motion_rotation, bins=20, alpha=0.7, color='darkblue', edgecolor='black')
+            axes2[1, 1].axvline(np.mean(all_cmd_vs_motion_rotation), color='red', linestyle='--', linewidth=2,
+                            label=f'Mean: {np.mean(all_cmd_vs_motion_rotation):.3f}°')
+            axes2[1, 1].set_xlabel('Rotation Error (degrees)')
+            axes2[1, 1].set_ylabel('Frequency')
+            axes2[1, 1].set_title('Commanded vs Motion Service (Rotation)')
+            axes2[1, 1].legend()
+            axes2[1, 1].grid(True, alpha=0.3)
+        
+        # Arm vs Motion Service
+        if all_arm_vs_motion_rotation:
+            axes2[1, 2].hist(all_arm_vs_motion_rotation, bins=20, alpha=0.7, color='darkorange', edgecolor='black')
+            axes2[1, 2].axvline(np.mean(all_arm_vs_motion_rotation), color='red', linestyle='--', linewidth=2,
+                            label=f'Mean: {np.mean(all_arm_vs_motion_rotation):.3f}°')
+            axes2[1, 2].set_xlabel('Rotation Error (degrees)')
+            axes2[1, 2].set_ylabel('Frequency')
+            axes2[1, 2].set_title('Arm vs Motion Service (Rotation)')
+            axes2[1, 2].legend()
+            axes2[1, 2].grid(True, alpha=0.3)
         
         plt.tight_layout()
         
-        # Save the pose accuracy plot
+        # Save the pose comparison plot
         pose_accuracy_file = os.path.join(data_dir, "pose_accuracy_statistics.png")
         plt.savefig(pose_accuracy_file, dpi=300, bbox_inches='tight')
-        print(f"Pose accuracy statistics plot saved to: {pose_accuracy_file}")
+        print(f"Pose comparison statistics plot saved to: {pose_accuracy_file}")
         
         plt.close(fig2)
     
@@ -1964,18 +2005,51 @@ def create_summary_table_plot(rotation_data, data_dir, tag=None):
          f"{stats['detection']['corners']['max']:.1f}"]
     ]
     
-    # Add pose accuracy data if available
-    if 'pose_accuracy' in stats:
-        if 'position_error' in stats['pose_accuracy']:
-            table_data.append(['Position Error (mm)', f"{stats['pose_accuracy']['position_error']['mean']:.3f}",
-                             f"{stats['pose_accuracy']['position_error']['std']:.3f}",
-                             f"{stats['pose_accuracy']['position_error']['min']:.3f}",
-                             f"{stats['pose_accuracy']['position_error']['max']:.3f}"])
-        if 'orientation_error' in stats['pose_accuracy']:
-            table_data.append(['Orientation Error (°)', f"{stats['pose_accuracy']['orientation_error']['mean']:.3f}",
-                             f"{stats['pose_accuracy']['orientation_error']['std']:.3f}",
-                             f"{stats['pose_accuracy']['orientation_error']['min']:.3f}",
-                             f"{stats['pose_accuracy']['orientation_error']['max']:.3f}"])
+    # Add pose comparison data if available
+    if 'pose_comparisons' in stats:
+        comparisons = stats['pose_comparisons']
+        
+        # Commanded vs Arm
+        if 'commanded_vs_arm' in comparisons:
+            cmd_arm = comparisons['commanded_vs_arm']
+            if 'translation_error_mm' in cmd_arm:
+                table_data.append(['Cmd vs Arm Trans (mm)', f"{cmd_arm['translation_error_mm']['mean']:.3f}",
+                                 f"{cmd_arm['translation_error_mm']['std']:.3f}",
+                                 f"{cmd_arm['translation_error_mm']['min']:.3f}",
+                                 f"{cmd_arm['translation_error_mm']['max']:.3f}"])
+            if 'rotation_error_deg' in cmd_arm:
+                table_data.append(['Cmd vs Arm Rot (°)', f"{cmd_arm['rotation_error_deg']['mean']:.3f}",
+                                 f"{cmd_arm['rotation_error_deg']['std']:.3f}",
+                                 f"{cmd_arm['rotation_error_deg']['min']:.3f}",
+                                 f"{cmd_arm['rotation_error_deg']['max']:.3f}"])
+        
+        # Commanded vs Motion Service
+        if 'commanded_vs_motion_service' in comparisons:
+            cmd_motion = comparisons['commanded_vs_motion_service']
+            if 'translation_error_mm' in cmd_motion:
+                table_data.append(['Cmd vs Motion Trans (mm)', f"{cmd_motion['translation_error_mm']['mean']:.3f}",
+                                 f"{cmd_motion['translation_error_mm']['std']:.3f}",
+                                 f"{cmd_motion['translation_error_mm']['min']:.3f}",
+                                 f"{cmd_motion['translation_error_mm']['max']:.3f}"])
+            if 'rotation_error_deg' in cmd_motion:
+                table_data.append(['Cmd vs Motion Rot (°)', f"{cmd_motion['rotation_error_deg']['mean']:.3f}",
+                                 f"{cmd_motion['rotation_error_deg']['std']:.3f}",
+                                 f"{cmd_motion['rotation_error_deg']['min']:.3f}",
+                                 f"{cmd_motion['rotation_error_deg']['max']:.3f}"])
+        
+        # Arm vs Motion Service
+        if 'arm_vs_motion_service' in comparisons:
+            arm_motion = comparisons['arm_vs_motion_service']
+            if 'translation_error_mm' in arm_motion:
+                table_data.append(['Arm vs Motion Trans (mm)', f"{arm_motion['translation_error_mm']['mean']:.3f}",
+                                 f"{arm_motion['translation_error_mm']['std']:.3f}",
+                                 f"{arm_motion['translation_error_mm']['min']:.3f}",
+                                 f"{arm_motion['translation_error_mm']['max']:.3f}"])
+            if 'rotation_error_deg' in arm_motion:
+                table_data.append(['Arm vs Motion Rot (°)', f"{arm_motion['rotation_error_deg']['mean']:.3f}",
+                                 f"{arm_motion['rotation_error_deg']['std']:.3f}",
+                                 f"{arm_motion['rotation_error_deg']['min']:.3f}",
+                                 f"{arm_motion['rotation_error_deg']['max']:.3f}"])
     
     # Create table plot
     fig, ax = plt.subplots(figsize=(12, 8))
@@ -2494,6 +2568,13 @@ async def main(
                 label=f"Arm vs Motion Service - Pose {actual_pose_number}"
             )
             
+            # Also compare commanded vs motion service
+            commanded_vs_motion_comparison = compare_poses(
+                target_pose,
+                A_i_pose_world_frame_raw_from_motion_service,
+                label=f"Commanded vs Motion Service - Pose {actual_pose_number}"
+            )
+            
             # Invert only the rotation, keep translation unchanged
             A_i_pose_world_frame = _invert_pose_rotation_only(A_i_pose_world_frame_raw)
             A_i_pose_world_frame_from_motion_service = _invert_pose_rotation_only(A_i_pose_world_frame_raw_from_motion_service)
@@ -2602,6 +2683,7 @@ async def main(
                 "measurement_statistics": measurement_stats,
                 "pose_comparisons": {
                     "commanded_vs_arm_after_move": commanded_vs_arm_comparison,
+                    "commanded_vs_motion_service": commanded_vs_motion_comparison,
                     "arm_after_move_vs_motion_service": arm_vs_motion_comparison
                 },
                 "summary": {
@@ -2713,17 +2795,49 @@ async def main(
         print(f"Corners detected: {statistics['detection']['corners']['mean']:.1f} ± {statistics['detection']['corners']['std']:.1f}")
         print(f"  Range: {statistics['detection']['corners']['min']:.0f} - {statistics['detection']['corners']['max']:.0f}")
         
-        # Add pose accuracy statistics if available
-        if 'pose_accuracy' in statistics:
-            print(f"\n🤖 ROBOT POSE ACCURACY (Commanded vs Actual):")
-            if 'position_error' in statistics['pose_accuracy']:
-                pos_stats = statistics['pose_accuracy']['position_error']
-                print(f"Position error: {pos_stats['mean']:.3f}mm ± {pos_stats['std']:.3f}mm")
-                print(f"  Range: {pos_stats['min']:.3f}mm - {pos_stats['max']:.3f}mm")
-            if 'orientation_error' in statistics['pose_accuracy']:
-                orient_stats = statistics['pose_accuracy']['orientation_error']
-                print(f"Orientation error: {orient_stats['mean']:.3f}° ± {orient_stats['std']:.3f}°")
-                print(f"  Range: {orient_stats['min']:.3f}° - {orient_stats['max']:.3f}°")
+        # Add pose comparison statistics if available
+        if 'pose_comparisons' in statistics:
+            print(f"\n📐 POSE COMPARISON STATISTICS:")
+            comparisons = statistics['pose_comparisons']
+            
+            # Commanded vs Arm
+            if 'commanded_vs_arm' in comparisons:
+                cmd_arm = comparisons['commanded_vs_arm']
+                print(f"\n  Commanded vs Arm:")
+                if 'translation_error_mm' in cmd_arm:
+                    t_stats = cmd_arm['translation_error_mm']
+                    print(f"    Translation error: {t_stats['mean']:.3f}mm ± {t_stats['std']:.3f}mm")
+                    print(f"      Range: {t_stats['min']:.3f}mm - {t_stats['max']:.3f}mm")
+                if 'rotation_error_deg' in cmd_arm:
+                    r_stats = cmd_arm['rotation_error_deg']
+                    print(f"    Rotation error: {r_stats['mean']:.3f}° ± {r_stats['std']:.3f}°")
+                    print(f"      Range: {r_stats['min']:.3f}° - {r_stats['max']:.3f}°")
+            
+            # Commanded vs Motion Service
+            if 'commanded_vs_motion_service' in comparisons:
+                cmd_motion = comparisons['commanded_vs_motion_service']
+                print(f"\n  Commanded vs Motion Service:")
+                if 'translation_error_mm' in cmd_motion:
+                    t_stats = cmd_motion['translation_error_mm']
+                    print(f"    Translation error: {t_stats['mean']:.3f}mm ± {t_stats['std']:.3f}mm")
+                    print(f"      Range: {t_stats['min']:.3f}mm - {t_stats['max']:.3f}mm")
+                if 'rotation_error_deg' in cmd_motion:
+                    r_stats = cmd_motion['rotation_error_deg']
+                    print(f"    Rotation error: {r_stats['mean']:.3f}° ± {r_stats['std']:.3f}°")
+                    print(f"      Range: {r_stats['min']:.3f}° - {r_stats['max']:.3f}°")
+            
+            # Arm vs Motion Service
+            if 'arm_vs_motion_service' in comparisons:
+                arm_motion = comparisons['arm_vs_motion_service']
+                print(f"\n  Arm vs Motion Service:")
+                if 'translation_error_mm' in arm_motion:
+                    t_stats = arm_motion['translation_error_mm']
+                    print(f"    Translation error: {t_stats['mean']:.3f}mm ± {t_stats['std']:.3f}mm")
+                    print(f"      Range: {t_stats['min']:.3f}mm - {t_stats['max']:.3f}mm")
+                if 'rotation_error_deg' in arm_motion:
+                    r_stats = arm_motion['rotation_error_deg']
+                    print(f"    Rotation error: {r_stats['mean']:.3f}° ± {r_stats['std']:.3f}°")
+                    print(f"      Range: {r_stats['min']:.3f}° - {r_stats['max']:.3f}°")
         
         # Add camera temperature statistics if available
         if 'camera_temperature' in statistics:
