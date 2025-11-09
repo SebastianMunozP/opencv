@@ -94,3 +94,21 @@ def call_go_mat2ov(R: np.ndarray) -> tuple:
     except Exception as e:
         print(f"Failed to call Go mat2ov converter: {e}")
         return None
+
+def call_go_get_viam_dot_dir() -> str:
+    """
+    Call Go binary to get Viam dot directory
+    
+    Returns:
+        Viam dot directory as string
+    """
+    try:
+        binary_path = _get_binary_path()
+        result = subprocess.run([binary_path, 'get_viam_dot_dir'], capture_output=True, text=True)
+        if result.returncode != 0:
+            print(f"Go binary error: {result.stderr}")
+            return None
+        return result.stdout.strip()
+    except Exception as e:
+        print(f"Failed to call Go get Viam dot directory: {e}")
+        return None

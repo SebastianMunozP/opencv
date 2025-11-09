@@ -1,6 +1,8 @@
 import asyncio
 import cv2
 import numpy as np
+import uuid
+import os
 from typing import ClassVar, Dict, Mapping, Optional, Sequence, Tuple
 
 from typing_extensions import Self
@@ -17,6 +19,7 @@ from viam.services.motion import Motion
 from viam.utils import struct_to_dict, ValueTypes
 
 from utils.utils import call_go_ov2mat, call_go_mat2ov
+from utils.files import capture_dir as get_capture_dir
 
 CALIBS = ["eye-in-hand", "eye-to-hand"]
 METHODS = [
@@ -37,6 +40,7 @@ METHOD_ATTR = "method"
 MOTION_ATTR = "motion"
 POSE_TRACKER_ATTR = "pose_tracker"
 SLEEP_ATTR = "sleep_seconds"
+WEB_APP_OPTIONS_ATTR = "web_app_options"
 
 # Default config attribute values
 DEFAULT_SLEEP_SECONDS = 2.0
@@ -112,6 +116,13 @@ class HandEyeCalibration(Generic, EasyResource):
             if not isinstance(body_name, str):
                 raise Exception(f"'{BODY_NAME_ATTR}' must be a string, got {type(body_name)}")
 
+        web_app_options = attrs.get(WEB_APP_OPTIONS_ATTR)
+        if web_app_options is not None:
+            if not isinstance(web_app_options, dict):
+                raise Exception(f"'{WEB_APP_OPTIONS_ATTR}' must be a dictionary, got {type(web_app_options)}")
+            if "assets_dir" not in web_app_options:
+                raise Exception(f"'{WEB_APP_OPTIONS_ATTR}' must contain an 'assets_dir' key")
+
         motion = attrs.get(MOTION_ATTR)
         optional_deps = []
         if motion is not None:
@@ -146,7 +157,7 @@ class HandEyeCalibration(Generic, EasyResource):
 
         # Parse joint positions or poses from config
         self.joint_positions = attrs.get(JOINT_POSITIONS_ATTR, [])
-
+        self.web_app_options = attrs.get(WEB_APP_OPTIONS_ATTR, None)
         poses_config = attrs.get(POSES_ATTR, [])
         self.poses = []
         for pose_dict in poses_config:
@@ -304,7 +315,60 @@ class HandEyeCalibration(Generic, EasyResource):
         resp = {}
         for key, value in command.items():
             match key:
+                case "run_simulated_calibration":
+                    print("running simulated calibration")
+                    calibration_id = str(uuid.uuid4())
+                    capture_directory = get_capture_dir(calibration_id)
+
+                    module_data_root = os.getenv("VIAM_MODULE_DATA")
+                    if module_data_root:
+                        module_data_directory = os.path.join(module_data_root, calibration_id)
+                    else:
+                        module_data_directory = capture_directory
+
+                    assets_dir_root = None
+                    assets_directory = None
+                    if isinstance(self.web_app_options, dict):
+                        assets_dir_root = self.web_app_options.get("assets_dir")
+                    if assets_dir_root:
+                        assets_directory = os.path.join(assets_dir_root, calibration_id)
+
+                    # Ensure all directories exist before writing
+                    os.makedirs(module_data_directory, exist_ok=True)
+                    if assets_directory:
+                        try:
+                            os.makedirs(assets_directory, exist_ok=True)
+                        except OSError as err:
+                            self.logger.warning(f"Could not create assets directory '{assets_directory}': {err}")
+                            assets_directory = None
+
+                    self.logger.info(f"capturing calibration data to {capture_directory}")
+                    resp["run_simulated_calibration"] = {
+                        "calibration_id": calibration_id,
+                        "module_data_directory": module_data_directory,
+                        "capture_directory": capture_directory,
+                        "assets_directory": assets_directory
+                    }
+                    ## Write dummy data to capture_dir
+                    for i in range(10):
+                        np.save(os.path.join(capture_directory, f"data_{i}.npy"), np.random.rand(10, 10))
+                        np.save(os.path.join(module_data_directory, f"data_{i}.npy"), np.random.rand(10, 10))
+                        if assets_directory:
+                            np.save(os.path.join(assets_directory, f"data_{i}.npy"), np.random.rand(10, 10))
+
+                    try:
+                        contents = os.listdir(capture_directory)
+                    except Exception as err:
+                        self.logger.error(f"listing capture directory failed: {err}")
+                    else:
+                        self.logger.info(f"capture directory contents: {contents}")
+
+                    
+
                 case "run_calibration":
+                    calibration_id = str(uuid.uuid4())
+                    capture_directory = get_capture_dir(calibration_id)
+                    self.logger.info(f"capturing calibration data to {capture_directory}")
                     R_gripper2base_list, t_gripper2base_list, R_target2cam_list, t_target2cam_list = await self._collect_calibration_data()
 
                     # Check if we have enough measurements
@@ -361,8 +425,10 @@ class HandEyeCalibration(Generic, EasyResource):
                                 }
                             },
                             "parent": self.arm.name
-                        }
+                        },
+                        "calibration_id": calibration_id
                     }
+                    break
                 case "move_arm": 
                     raise NotImplementedError("This is not yet implemented")
                 case "check_bodies":

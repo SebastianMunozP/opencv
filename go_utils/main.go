@@ -7,6 +7,7 @@ import (
 
 	"github.com/golang/geo/r3"
 	"go.viam.com/rdk/spatialmath"
+	rutils "go.viam.com/rdk/utils"
 )
 
 func orientationVectorToMatrix(ox, oy, oz, theta float64) {
@@ -65,6 +66,8 @@ func main() {
 		fmt.Fprintf(os.Stderr, "    %s ov2mat <ox> <oy> <oz> <theta>\n", os.Args[0])
 		fmt.Fprintf(os.Stderr, "  Convert rotation matrix to orientation vector:\n")
 		fmt.Fprintf(os.Stderr, "    %s mat2ov <m11> <m12> <m13> <m21> <m22> <m23> <m31> <m32> <m33>\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "  Get Viam dot directory:\n")
+		fmt.Fprintf(os.Stderr, "    %s get_viam_dot_dir\n", os.Args[0])
 		os.Exit(1)
 	}
 
@@ -126,6 +129,10 @@ func main() {
 			matrixElements[3], matrixElements[4], matrixElements[5], // Row 2
 			matrixElements[6], matrixElements[7], matrixElements[8], // Row 3
 		)
+
+	case "get_viam_dot_dir":
+		fmt.Println(rutils.ViamDotDir)
+		os.Exit(0)
 
 	default:
 		// For backward compatibility, if no command is specified but we have 4 args,
