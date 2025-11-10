@@ -40,8 +40,7 @@ METHOD_ATTR = "method"
 MOTION_ATTR = "motion"
 POSE_TRACKER_ATTR = "pose_tracker"
 SLEEP_ATTR = "sleep_seconds"
-WEB_APP_OPTIONS_ATTR = "web_app_options"
-
+WEB_APP_RESOURCE_NAME_ATTR = "web_app_resource_name"
 # Default config attribute values
 DEFAULT_SLEEP_SECONDS = 2.0
 DEFAULT_METHOD = "CALIB_HAND_EYE_TSAI"
@@ -116,12 +115,10 @@ class HandEyeCalibration(Generic, EasyResource):
             if not isinstance(body_name, str):
                 raise Exception(f"'{BODY_NAME_ATTR}' must be a string, got {type(body_name)}")
 
-        web_app_options = attrs.get(WEB_APP_OPTIONS_ATTR)
-        if web_app_options is not None:
-            if not isinstance(web_app_options, dict):
-                raise Exception(f"'{WEB_APP_OPTIONS_ATTR}' must be a dictionary, got {type(web_app_options)}")
-            if "assets_dir" not in web_app_options:
-                raise Exception(f"'{WEB_APP_OPTIONS_ATTR}' must contain an 'assets_dir' key")
+        web_app_resource_name = attrs.get(WEB_APP_RESOURCE_NAME_ATTR)
+        if web_app_resource_name is not None:
+            if not isinstance(web_app_resource_name, str):
+                raise Exception(f"'{WEB_APP_RESOURCE_NAME_ATTR}' must be a string, got {type(web_app_resource_name)}")
 
         motion = attrs.get(MOTION_ATTR)
         optional_deps = []
@@ -175,6 +172,13 @@ class HandEyeCalibration(Generic, EasyResource):
         self.method = attrs.get(METHOD_ATTR, DEFAULT_METHOD)
         self.sleep_seconds = attrs.get(SLEEP_ATTR, DEFAULT_SLEEP_SECONDS)
         self.body_names = [attrs.get(BODY_NAME_ATTR)] if attrs.get(BODY_NAME_ATTR) is not None else []
+
+        web_app_resource_name = attrs.get(WEB_APP_RESOURCE_NAME_ATTR)
+        self.web_app: EasyResource = dependencies.get(web_app_resource_name) if web_app_resource_name else None
+        if self.web_app is not None:
+            self.logger.debug(f"Web app service configured: {self.web_app.name}")
+        else:
+            self.logger.debug("No web app service configured")
 
         return super().reconfigure(config, dependencies)
     
@@ -318,52 +322,25 @@ class HandEyeCalibration(Generic, EasyResource):
                 case "run_simulated_calibration":
                     print("running simulated calibration")
                     calibration_id = str(uuid.uuid4())
-                    capture_directory = get_capture_dir(calibration_id)
 
-                    module_data_root = os.getenv("VIAM_MODULE_DATA")
-                    if module_data_root:
-                        module_data_directory = os.path.join(module_data_root, calibration_id)
-                    else:
-                        module_data_directory = capture_directory
+                    tracking_dir = None
+                    if self.web_app is not None:
+                        tracking_dir = self.web_app.do_command({"get_base_dir": None})
+                        if tracking_dir is not None:
+                            tracking_dir = os.path.join(tracking_dir, calibration_id)
 
-                    assets_dir_root = None
-                    assets_directory = None
-                    if isinstance(self.web_app_options, dict):
-                        assets_dir_root = self.web_app_options.get("assets_dir")
-                    if assets_dir_root:
-                        assets_directory = os.path.join(assets_dir_root, calibration_id)
 
                     # Ensure all directories exist before writing
-                    os.makedirs(module_data_directory, exist_ok=True)
-                    if assets_directory:
-                        try:
-                            os.makedirs(assets_directory, exist_ok=True)
-                        except OSError as err:
-                            self.logger.warning(f"Could not create assets directory '{assets_directory}': {err}")
-                            assets_directory = None
+                    os.makedirs(tracking_dir, exist_ok=True)
 
-                    self.logger.info(f"capturing calibration data to {capture_directory}")
+                    self.logger.info(f"capturing calibration data to {tracking_dir}")
                     resp["run_simulated_calibration"] = {
                         "calibration_id": calibration_id,
-                        "module_data_directory": module_data_directory,
-                        "capture_directory": capture_directory,
-                        "assets_directory": assets_directory
+                        "tracking_directory": tracking_dir
                     }
-                    ## Write dummy data to capture_dir
+
                     for i in range(10):
-                        np.save(os.path.join(capture_directory, f"data_{i}.npy"), np.random.rand(10, 10))
-                        np.save(os.path.join(module_data_directory, f"data_{i}.npy"), np.random.rand(10, 10))
-                        if assets_directory:
-                            np.save(os.path.join(assets_directory, f"data_{i}.npy"), np.random.rand(10, 10))
-
-                    try:
-                        contents = os.listdir(capture_directory)
-                    except Exception as err:
-                        self.logger.error(f"listing capture directory failed: {err}")
-                    else:
-                        self.logger.info(f"capture directory contents: {contents}")
-
-                    
+                        np.save(os.path.join(tracking_dir, f"data_{i}.npy"), np.random.rand(10, 10))
 
                 case "run_calibration":
                     calibration_id = str(uuid.uuid4())
