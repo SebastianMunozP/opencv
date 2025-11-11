@@ -42,7 +42,7 @@ USE_MOTION_SERVICE_FOR_POSES_ATTR = "use_motion_service_for_poses"
 # Default config attribute values
 DEFAULT_SLEEP_SECONDS = 2.0
 DEFAULT_METHOD = "CALIB_HAND_EYE_TSAI"
-DEFAULT_USE_MOTION_SERVICE_FOR_POSES = True
+DEFAULT_USE_MOTION_SERVICE_FOR_POSES = False
 
 
 class HandEyeCalibration(Generic, EasyResource):
