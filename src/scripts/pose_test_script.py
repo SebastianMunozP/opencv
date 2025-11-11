@@ -475,66 +475,42 @@ def frame_config_to_transformation_matrix(frame_config):
     Convert Viam frame configuration to a 4x4 transformation matrix.
     Works with both dictionary and object formats.
     """
-    # Extract translation - handle both dict and object formats
-    if isinstance(frame_config, dict):
-        translation = frame_config.get('translation', {})
-        t = np.array([
-            translation.get('x', 0),
-            translation.get('y', 0), 
-            translation.get('z', 0)
-        ])
-    else:
-        t = np.array([frame_config.translation.x, frame_config.translation.y, frame_config.translation.z])
-    
-    # Extract rotation - handle both dict and object formats
-    if isinstance(frame_config, dict):
-        orientation = frame_config.get('orientation', {})
-        if orientation and 'value' in orientation:
-            value = orientation['value']
-            th = value.get('th', 0)
-            axis = np.array([
-                value.get('x', 0),
-                value.get('y', 0),
-                value.get('z', 0)
-            ])
-        else:
-            axis = np.array([0, 0, 1])
-            th = 0
-    else:
-        if frame_config.orientation and hasattr(frame_config.orientation, 'value'):
-            th = frame_config.orientation.value['th']
-            axis = np.array([
-                frame_config.orientation.value['x'],
-                frame_config.orientation.value['y'],
-                frame_config.orientation.value['z']
-            ])
-        else:
-            axis = np.array([0, 0, 1])
-            th = 0
-    
-    # Normalize axis
-    axis_norm = np.linalg.norm(axis)
-    if axis_norm > 0:
-        axis = axis / axis_norm
-    
-    # Build rotation matrix from axis-angle
-    th_rad = np.deg2rad(th)
-    c = np.cos(th_rad)
-    s = np.sin(th_rad)
-    t_temp = 1 - c
-    
-    x, y, z = axis
-    R = np.array([
-        [t_temp*x*x + c,      t_temp*x*y - s*z,  t_temp*x*z + s*y],
-        [t_temp*x*y + s*z,    t_temp*y*y + c,    t_temp*y*z - s*x],
-        [t_temp*x*z - s*y,    t_temp*y*z + s*x,  t_temp*z*z + c]
-    ])
-    
-    # Build transformation matrix
+    translation = frame_config.get('translation', None)
+    if translation is None:
+        raise Exception("Failed to extract translation from frame configuration")
+        
+    x = translation.get('x', None)
+    y = translation.get('y', None)
+    z = translation.get('z', None)
+
+    if x is None or y is None or z is None:
+        raise Exception("Failed to extract translation vector from frame configuration")
+        
+    t = np.array([x, y, z])
+
+    orientation = frame_config.get('orientation', None)
+    if orientation is None:
+        raise Exception("Failed to extract orientation from frame configuration")
+        
+    orientation_value = orientation.get('value', None)
+    if orientation_value is None:
+        raise Exception("Failed to extract orientation value from frame configuration")
+        
+    ox = orientation_value.get('x', None)
+    oy = orientation_value.get('y', None)
+    oz = orientation_value.get('z', None)
+    theta = orientation_value.get('th', None)
+
+    if ox is None or oy is None or oz is None or theta is None:
+        raise Exception("Failed to extract orientation vector components from frame configuration")
+        
+    R = call_go_ov2mat(ox, oy, oz, theta)
+    if R is None:
+        raise Exception("Failed to convert orientation vector to rotation matrix")
+        
     T = np.eye(4)
-    T[0:3, 0:3] = R
-    T[0:3, 3] = t
-    
+    T[:3, :3] = R
+    T[:3, 3] = t
     return T
 
 
